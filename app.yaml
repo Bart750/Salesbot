@@ -1,0 +1,9 @@
+runtime: python39
+
+env_variables:
+  GOOGLE_CLOUD_PROJECT: "silent-hook-452415-g6"
+  GOOGLE_CLOUD_STORAGE_BUCKET: "staging.silent-hook-452415-g6"  # Update to match your actual bucket name
+
+handlers:
+  - url: /.*  # Route all requests to the Flask app
+    script: auto
