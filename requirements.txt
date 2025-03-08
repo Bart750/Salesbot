@@ -8,3 +8,5 @@ google-auth-oauthlib
 google-auth-httplib2
 pymupdf
 gunicorn
+google-cloud-storage
+
