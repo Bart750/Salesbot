@@ -5,16 +5,22 @@ from sentence_transformers import SentenceTransformer
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 import fitz  # PyMuPDF for PDFs
+import os
+import json
 
 app = Flask(__name__)
 
-# ✅ Path to service account JSON file
-SERVICE_ACCOUNT_FILE = "service_account.json"
+# ✅ Google Drive API Authentication using Environment Variable
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-# ✅ Authenticate Google Drive using Service Account
 def authenticate_drive():
-    creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+
+    if not SERVICE_ACCOUNT_JSON:
+        raise ValueError("❌ No service account credentials found in environment variables.")
+
+    creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return creds
 
 # ✅ Initialize AI Model
@@ -65,17 +71,24 @@ def api_search():
     if not query:
         return jsonify({"error": "No query provided"}), 400
     
-    results = search_files(query)
-    if not results:
-        return jsonify({"message": "No relevant files found."})
-    
-    # Optionally extract summary of the top result
-    top_result = results[0]
-    file_id = top_result["drive_link"].split("/")[-2]  # Extract file ID
-    text_content = extract_text_from_drive(file_id)
-    top_result["summary"] = text_content[:500] + "..." if len(text_content) > 500 else text_content
-    
-    return jsonify(results)
+    try:
+        results = search_files(query)
+        if not results:
+            return jsonify({"message": "No relevant files found."})
+        
+        # Extract summary of the top result
+        top_result = results[0]
+        file_id = top_result["drive_link"].split("/")[-2]  # Extract file ID
+        text_content = extract_text_from_drive(file_id)
+        top_result["summary"] = text_content[:500] + "..." if len(text_content) > 500 else text_content
+        
+        return jsonify(results)
+
+    except Exception as e:
+        import traceback
+        error_message = traceback.format_exc()
+        print(f"❌ Error in /search: {error_message}")
+        return jsonify({"error": str(e)}), 500
 
 # ✅ Run Flask App
 if __name__ == "__main__":
