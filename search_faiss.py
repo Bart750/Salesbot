@@ -102,7 +102,7 @@ def process_drive():
         for file in files:
             file_id = file["id"]
             file_name = file["name"]
-            print(f"📥 Processing: {file_name}")
+            print(f"📅 Processing: {file_name}")
             try:
                 request = service.files().get_media(fileId=file_id)
                 with fitz.open(stream=request.execute(), filetype="pdf") as doc:
