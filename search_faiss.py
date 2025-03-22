@@ -3,6 +3,7 @@ import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 import fitz  # PyMuPDF for PDFs
 import os
@@ -12,8 +13,9 @@ import subprocess
 import time
 import json
 import zipfile
-import io
 import hashlib
+import tempfile
+import io
 
 app = Flask(__name__)
 
@@ -115,21 +117,28 @@ def process_drive():
         for file in zip_files:
             file_id = file["id"]
             file_name = file["name"]
-            print(f"📦 Unzipping: {file_name}")
+            print(f"📦 Downloading: {file_name}")
+
             request = service.files().get_media(fileId=file_id)
-            fh = io.BytesIO(request.execute())
-            with zipfile.ZipFile(fh, 'r') as zip_ref:
+            temp_zip_path = os.path.join(tempfile.gettempdir(), file_name)
+            with open(temp_zip_path, "wb") as f:
+                downloader = MediaIoBaseDownload(f, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+
+            print(f"📂 Unzipping {file_name}...")
+            with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
                 for zip_info in zip_ref.infolist():
                     if zip_info.filename.endswith(".pdf"):
-                        print(f"📄 Found PDF: {zip_info.filename}")
-                        with zip_ref.open(zip_info) as pdf_file:
-                            try:
+                        try:
+                            with zip_ref.open(zip_info) as pdf_file:
                                 doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
                                 text = "".join([page.get_text("text") for page in doc])
                                 if text and not is_duplicate(text):
                                     new_knowledge[zip_info.filename] = text.strip()
-                            except Exception as e:
-                                print(f"❌ Could not process {zip_info.filename}: {e}")
+                        except Exception as e:
+                            print(f"❌ Could not process {zip_info.filename}: {e}")
 
         knowledge_base.update(new_knowledge)
         np.save("ai_metadata.npy", knowledge_base)
