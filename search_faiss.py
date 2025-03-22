@@ -26,16 +26,24 @@ index = None
 knowledge_base = {}
 
 def load_faiss():
-    """ Loads FAISS index only when required to reduce memory usage """
     global index
     if index is None:
         try:
             index = faiss.read_index("ai_search_index.faiss")
-            index.nprobe = 1  # Reduce FAISS search complexity
+            index.nprobe = 1
             print("✅ FAISS index loaded successfully.")
         except Exception as e:
             print(f"❌ Error loading FAISS index: {e}")
             index = None
+
+def load_knowledge_base():
+    global knowledge_base
+    try:
+        knowledge_base = np.load("ai_metadata.npy", allow_pickle=True).item()
+        print("✅ Knowledge base loaded successfully.")
+    except Exception as e:
+        print(f"❌ Error loading knowledge base: {e}")
+        knowledge_base = {}
 
 # ✅ Graceful Shutdown Handling
 def cleanup(signum, frame):
@@ -43,7 +51,7 @@ def cleanup(signum, frame):
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, cleanup)
-signal.signal(signal.SIGINT, cleanup)  # Handle Ctrl+C
+signal.signal(signal.SIGINT, cleanup)
 
 # ✅ Root Endpoint (Fixes Render's Health Check Issue)
 @app.route("/", methods=["GET"])
@@ -53,13 +61,12 @@ def home():
 # ✅ Health Check Endpoint
 @app.route("/health", methods=["GET"])
 def health_check():
-    print("📡 Health check ping received.")
+    print("📱 Health check ping received.")
     return jsonify({"status": "API is live", "message": "Endpoints are active."})
 
 # ✅ Query knowledge base
 @app.route("/query", methods=["GET"])
 def query_knowledge():
-    """ Search for insights from the stored knowledge base """
     question = request.args.get("question")
     if not question:
         return jsonify({"error": "No question provided."}), 400
@@ -68,17 +75,30 @@ def query_knowledge():
 
     if index is None:
         load_faiss()
+    if not knowledge_base:
+        load_knowledge_base()
     if index is None:
         return jsonify({"error": "FAISS index not available. Try processing documents first."}), 500
+
     try:
         query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
-        D, I = index.search(query_embedding, 3)  # Find top 3 related insights
+        D, I = index.search(query_embedding, 3)
 
+        file_keys = list(knowledge_base.keys())
         results = []
         for idx in I[0]:
             if idx == -1:
                 continue
-            results.append({"insight": f"Result {idx}"})  # Mock response for now
+            file_name = file_keys[idx]
+            insight_text = knowledge_base[file_name]
+            results.append({
+                "source": file_name,
+                "insight": insight_text[:500] + "..."
+            })
+
+        if not results:
+            print("⚠️ No relevant insights found.")
+            return jsonify({"message": "No relevant insights found."})
 
         return jsonify(results)
     except Exception as e:
@@ -89,24 +109,20 @@ def query_knowledge():
 if __name__ == "__main__":
     print("🔥 Starting SalesBOT API...")
 
-    # 🔧 Ensure Render uses the correct port
-    port = int(os.getenv("PORT", 10000))  # 🔥 Force Flask to use port 10000
+    port = int(os.getenv("PORT", 10000))
     print(f"🌐 Running on port {port} (Render auto-detects this)")
 
-    # Kill existing processes **only if needed**
     if os.system(f"netstat -an | grep {port}") == 0:
         print("⚠️ Port already in use. Restarting server...")
         kill_existing_processes()
 
-    # Load FAISS index
     load_faiss()
+    load_knowledge_base()
 
-    # Debugging: List all active routes
     print("✅ Available routes in Flask app:")
     for rule in app.url_map.iter_rules():
         print(f"{rule.endpoint}: {rule.methods} -> {rule.rule}")
 
-    # Run Waitress instead of Flask for production
     from waitress import serve
     try:
         serve(app, host="0.0.0.0", port=port)
