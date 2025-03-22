@@ -16,6 +16,8 @@ import zipfile
 import hashlib
 import tempfile
 import io
+import gc
+import psutil
 
 app = Flask(__name__)
 
@@ -70,13 +72,24 @@ def load_knowledge_base():
 
 # ✅ Remove Duplicates
 file_hashes = set()
+processed_files_path = "processed_files.json"
+processed_files = set()
 
-def is_duplicate(content):
+if os.path.exists(processed_files_path):
+    with open(processed_files_path, "r") as f:
+        processed_files = set(json.load(f))
+
+def is_duplicate(content, filename):
     content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
-    if content_hash in file_hashes:
+    if content_hash in file_hashes or filename in processed_files:
         return True
     file_hashes.add(content_hash)
+    processed_files.add(filename)
     return False
+
+def log_memory():
+    mem = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+    print(f"🔍 RAM usage: {mem:.2f} MB")
 
 # ✅ Graceful Shutdown Handling
 def cleanup(signum, frame):
@@ -97,7 +110,7 @@ def health_check():
     print("📱 Health check ping received.")
     return jsonify({"status": "API is live", "message": "Endpoints are active."})
 
-# ✅ Process and store Google Drive docs
+# ✅ Process and store Google Drive docs in small batches
 @app.route("/process_drive", methods=["POST"])
 def process_drive():
     global knowledge_base
@@ -105,6 +118,7 @@ def process_drive():
     creds = authenticate_drive()
     if not creds:
         return jsonify({"error": "Google Drive authentication failed."}), 500
+
     try:
         service = build("drive", "v3", credentials=creds)
         zip_results = service.files().list(q="name contains '.zip'", fields="files(id, name)").execute()
@@ -113,7 +127,10 @@ def process_drive():
         if not zip_files:
             return jsonify({"message": "No .zip files found in Google Drive."})
 
+        limit = int(request.args.get("limit", 3))
+        processed_this_run = 0
         new_knowledge = {}
+
         for file in zip_files:
             file_id = file["id"]
             file_name = file["name"]
@@ -130,19 +147,28 @@ def process_drive():
             print(f"📂 Unzipping {file_name}...")
             with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
                 for zip_info in zip_ref.infolist():
+                    if processed_this_run >= limit:
+                        break
                     if zip_info.filename.endswith(".pdf"):
                         try:
                             with zip_ref.open(zip_info) as pdf_file:
-                                doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-                                text = "".join([page.get_text("text") for page in doc])
-                                if text and not is_duplicate(text):
+                                doc = fitz.open("pdf", pdf_file.read())
+                                text = "".join([page.get_text("text") for page in doc[:10]])
+                                doc.close()
+                                gc.collect()
+                                if text and not is_duplicate(text, zip_info.filename):
                                     new_knowledge[zip_info.filename] = text.strip()
+                                    processed_this_run += 1
+                                    log_memory()
                         except Exception as e:
                             print(f"❌ Could not process {zip_info.filename}: {e}")
 
         knowledge_base.update(new_knowledge)
         np.save("ai_metadata.npy", knowledge_base)
-        return jsonify({"message": f"Processed {len(new_knowledge)} unique files from zip(s)."})
+        with open(processed_files_path, "w") as f:
+            json.dump(list(processed_files), f)
+
+        return jsonify({"message": f"Processed {processed_this_run} new file(s). Skipped already processed or duplicates."})
 
     except Exception as e:
         print(f"❌ Google Drive processing error: {e}")
@@ -218,3 +244,4 @@ if __name__ == "__main__":
         else:
             print(f"❌ Unexpected error: {e}")
             raise e
+
