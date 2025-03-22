@@ -11,6 +11,9 @@ import sys
 import subprocess
 import time
 import json
+import zipfile
+import io
+import hashlib
 
 app = Flask(__name__)
 
@@ -63,6 +66,16 @@ def load_knowledge_base():
         print(f"❌ Error loading knowledge base: {e}")
         knowledge_base = {}
 
+# ✅ Remove Duplicates
+file_hashes = set()
+
+def is_duplicate(content):
+    content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+    if content_hash in file_hashes:
+        return True
+    file_hashes.add(content_hash)
+    return False
+
 # ✅ Graceful Shutdown Handling
 def cleanup(signum, frame):
     print("🛑 Stopping SalesBOT API...")
@@ -92,29 +105,35 @@ def process_drive():
         return jsonify({"error": "Google Drive authentication failed."}), 500
     try:
         service = build("drive", "v3", credentials=creds)
-        results = service.files().list(q="mimeType='application/pdf'", fields="files(id, name)", pageSize=5).execute()
-        files = results.get('files', [])
+        zip_results = service.files().list(q="name contains '.zip'", fields="files(id, name)").execute()
+        zip_files = zip_results.get('files', [])
 
-        if not files:
-            return jsonify({"message": "No sales documents found in Google Drive."})
+        if not zip_files:
+            return jsonify({"message": "No .zip files found in Google Drive."})
 
         new_knowledge = {}
-        for file in files:
+        for file in zip_files:
             file_id = file["id"]
             file_name = file["name"]
-            print(f"📅 Processing: {file_name}")
-            try:
-                request = service.files().get_media(fileId=file_id)
-                with fitz.open(stream=request.execute(), filetype="pdf") as doc:
-                    text = "".join([page.get_text("text") for page in doc])
-                if text:
-                    new_knowledge[file_name] = text.strip()
-            except Exception as e:
-                print(f"❌ Error processing {file_name}: {e}")
+            print(f"📦 Unzipping: {file_name}")
+            request = service.files().get_media(fileId=file_id)
+            fh = io.BytesIO(request.execute())
+            with zipfile.ZipFile(fh, 'r') as zip_ref:
+                for zip_info in zip_ref.infolist():
+                    if zip_info.filename.endswith(".pdf"):
+                        print(f"📄 Found PDF: {zip_info.filename}")
+                        with zip_ref.open(zip_info) as pdf_file:
+                            try:
+                                doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+                                text = "".join([page.get_text("text") for page in doc])
+                                if text and not is_duplicate(text):
+                                    new_knowledge[zip_info.filename] = text.strip()
+                            except Exception as e:
+                                print(f"❌ Could not process {zip_info.filename}: {e}")
 
         knowledge_base.update(new_knowledge)
         np.save("ai_metadata.npy", knowledge_base)
-        return jsonify({"message": "Processed & stored sales documents successfully."})
+        return jsonify({"message": f"Processed {len(new_knowledge)} unique files from zip(s)."})
 
     except Exception as e:
         print(f"❌ Google Drive processing error: {e}")
@@ -190,3 +209,4 @@ if __name__ == "__main__":
         else:
             print(f"❌ Unexpected error: {e}")
             raise e
+
