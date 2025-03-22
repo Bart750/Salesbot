@@ -2,11 +2,15 @@ from flask import Flask, request, jsonify
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
+import fitz  # PyMuPDF for PDFs
 import os
 import signal
 import sys
 import subprocess
 import time
+import json
 
 app = Flask(__name__)
 
@@ -15,8 +19,22 @@ def kill_existing_processes():
     print("🛑 Killing any existing Gunicorn & Waitress processes...")
     subprocess.run(["pkill", "-f", "gunicorn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["pkill", "-f", "waitress"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)  # Wait 2 seconds before restarting
+    time.sleep(2)
     print("✅ Killed old instances.")
+
+# ✅ Google Drive API Authentication
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+def authenticate_drive():
+    try:
+        SERVICE_ACCOUNT_JSON = json.loads(os.getenv("SERVICE_ACCOUNT_JSON", "{}"))
+        if not SERVICE_ACCOUNT_JSON:
+            raise ValueError("❌ No service account credentials found in environment variables.")
+        creds = service_account.Credentials.from_service_account_info(SERVICE_ACCOUNT_JSON, scopes=SCOPES)
+        return creds
+    except Exception as e:
+        print(f"❌ Error authenticating Google Drive: {e}")
+        return None
 
 # ✅ Initialize AI Model
 model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -53,7 +71,7 @@ def cleanup(signum, frame):
 signal.signal(signal.SIGTERM, cleanup)
 signal.signal(signal.SIGINT, cleanup)
 
-# ✅ Root Endpoint (Fixes Render's Health Check Issue)
+# ✅ Root Endpoint
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"message": "SalesBOT API is running!", "status": "OK"}), 200
@@ -63,6 +81,44 @@ def home():
 def health_check():
     print("📱 Health check ping received.")
     return jsonify({"status": "API is live", "message": "Endpoints are active."})
+
+# ✅ Process and store Google Drive docs
+@app.route("/process_drive", methods=["POST"])
+def process_drive():
+    global knowledge_base
+    print("📂 Processing documents from Google Drive...")
+    creds = authenticate_drive()
+    if not creds:
+        return jsonify({"error": "Google Drive authentication failed."}), 500
+    try:
+        service = build("drive", "v3", credentials=creds)
+        results = service.files().list(q="mimeType='application/pdf'", fields="files(id, name)", pageSize=5).execute()
+        files = results.get('files', [])
+
+        if not files:
+            return jsonify({"message": "No sales documents found in Google Drive."})
+
+        new_knowledge = {}
+        for file in files:
+            file_id = file["id"]
+            file_name = file["name"]
+            print(f"📥 Processing: {file_name}")
+            try:
+                request = service.files().get_media(fileId=file_id)
+                with fitz.open(stream=request.execute(), filetype="pdf") as doc:
+                    text = "".join([page.get_text("text") for page in doc])
+                if text:
+                    new_knowledge[file_name] = text.strip()
+            except Exception as e:
+                print(f"❌ Error processing {file_name}: {e}")
+
+        knowledge_base.update(new_knowledge)
+        np.save("ai_metadata.npy", knowledge_base)
+        return jsonify({"message": "Processed & stored sales documents successfully."})
+
+    except Exception as e:
+        print(f"❌ Google Drive processing error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # ✅ Query knowledge base
 @app.route("/query", methods=["GET"])
@@ -87,7 +143,7 @@ def query_knowledge():
         file_keys = list(knowledge_base.keys())
         results = []
         for idx in I[0]:
-            if idx == -1:
+            if idx == -1 or idx >= len(file_keys):
                 continue
             file_name = file_keys[idx]
             insight_text = knowledge_base[file_name]
@@ -108,7 +164,6 @@ def query_knowledge():
 # ✅ Run Flask App
 if __name__ == "__main__":
     print("🔥 Starting SalesBOT API...")
-
     port = int(os.getenv("PORT", 10000))
     print(f"🌐 Running on port {port} (Render auto-detects this)")
 
