@@ -136,10 +136,10 @@ def process_drive():
             file_name = file["name"]
             print(f"📦 Downloading: {file_name}")
 
-            request = service.files().get_media(fileId=file_id)
+            drive_request = service.files().get_media(fileId=file_id)
             temp_zip_path = os.path.join(tempfile.gettempdir(), file_name)
             with open(temp_zip_path, "wb") as f:
-                downloader = MediaIoBaseDownload(f, request)
+                downloader = MediaIoBaseDownload(f, drive_request)
                 done = False
                 while not done:
                     _, done = downloader.next_chunk()
@@ -244,4 +244,3 @@ if __name__ == "__main__":
         else:
             print(f"❌ Unexpected error: {e}")
             raise e
-
