@@ -1,4 +1,4 @@
-flask import Flask, request, jsonify
+from flask import Flask, request, jsonify
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
