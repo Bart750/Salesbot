@@ -15,9 +15,9 @@ import json
 import zipfile
 import hashlib
 import tempfile
-import io
 import gc
 import psutil
+import requests
 
 app = Flask(__name__)
 
@@ -136,43 +136,57 @@ def process_drive():
             file_name = file["name"]
             print(f"📦 Downloading: {file_name}")
 
-            drive_request = service.files().get_media(fileId=file_id)
-            temp_zip_path = os.path.join(tempfile.gettempdir(), file_name)
-            with open(temp_zip_path, "wb") as f:
-                downloader = MediaIoBaseDownload(f, drive_request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
+            try:
+                drive_request = service.files().get_media(fileId=file_id)
+                temp_zip_path = os.path.join(tempfile.gettempdir(), file_name)
+                with open(temp_zip_path, "wb") as f:
+                    downloader = MediaIoBaseDownload(f, drive_request)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
 
-            print(f"📂 Unzipping {file_name}...")
-            with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
-                for zip_info in zip_ref.infolist():
-                    if processed_this_run >= limit:
-                        break
-                    if zip_info.filename.endswith(".pdf"):
-                        try:
-                            with zip_ref.open(zip_info) as pdf_file:
-                                doc = fitz.open("pdf", pdf_file.read())
-                                text = "".join([page.get_text("text") for page in doc[:10]])
-                                doc.close()
-                                gc.collect()
-                                if text and not is_duplicate(text, zip_info.filename):
-                                    new_knowledge[zip_info.filename] = text.strip()
-                                    processed_this_run += 1
-                                    log_memory()
-                        except Exception as e:
-                            print(f"❌ Could not process {zip_info.filename}: {e}")
+                if not zipfile.is_zipfile(temp_zip_path):
+                    print(f"⚠️ Skipping {file_name} (not a valid ZIP file)")
+                    continue
+
+                print(f"📂 Unzipping {file_name}...")
+                with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+                    for zip_info in zip_ref.infolist():
+                        if processed_this_run >= limit:
+                            break
+                        if zip_info.filename.endswith(".pdf"):
+                            try:
+                                with zip_ref.open(zip_info) as pdf_file:
+                                    doc = fitz.open("pdf", pdf_file.read())
+                                    text = "".join([page.get_text("text") for page in doc[:10]])
+                                    doc.close()
+                                    gc.collect()
+                                    if text and not is_duplicate(text, zip_info.filename):
+                                        new_knowledge[zip_info.filename] = text.strip()
+                                        processed_this_run += 1
+                                        log_memory()
+                            except Exception as e:
+                                print(f"❌ Error reading {zip_info.filename}: {e}")
+                        else:
+                            print(f"⚠️ Skipping non-PDF file: {zip_info.filename}")
+
+            except Exception as e:
+                print(f"❌ Failed to process ZIP {file_name}: {e}")
+                continue
 
         knowledge_base.update(new_knowledge)
         np.save("ai_metadata.npy", knowledge_base)
         with open(processed_files_path, "w") as f:
             json.dump(list(processed_files), f)
 
-        return jsonify({"message": f"Processed {processed_this_run} new file(s). Skipped already processed or duplicates."})
+        return jsonify({
+            "message": f"Processed {processed_this_run} new file(s). Skipped broken/duplicate/non-PDF files.",
+            "processed_files": list(new_knowledge.keys())
+        })
 
     except Exception as e:
         print(f"❌ Google Drive processing error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Google Drive processing failed: {str(e)}"}), 500
 
 # ✅ Query knowledge base
 @app.route("/query", methods=["GET"])
@@ -214,6 +228,17 @@ def query_knowledge():
     except Exception as e:
         print(f"❌ Error processing query: {e}")
         return jsonify({"error": str(e)}), 500
+
+# ✅ Live TGI Insight from Make Webhook
+@app.route("/latest-insight", methods=["GET"])
+def latest_insight():
+    try:
+        response = requests.get("https://make.com/hooks/insight-webhook")  # Replace with your actual Make webhook URL
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to fetch insight from Make webhook."}), 500
+        return jsonify(response.json())
+    except Exception as e:
+        return jsonify({"error": f"Error fetching latest insight: {str(e)}"}), 500
 
 # ✅ Run Flask App
 if __name__ == "__main__":
