@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+flask import Flask, request, jsonify
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -104,17 +104,15 @@ signal.signal(signal.SIGINT, cleanup)
 def home():
     return jsonify({"message": "SalesBOT API is running!", "status": "OK"}), 200
 
-# ✅ Health Check Endpoint
+# ✅ Health Check
 @app.route("/health", methods=["GET"])
 def health_check():
-    print("📱 Health check ping received.")
     return jsonify({"status": "API is live", "message": "Endpoints are active."})
 
-# ✅ Process and store Google Drive docs in small batches
+# ✅ Process Drive
 @app.route("/process_drive", methods=["POST"])
 def process_drive():
     global knowledge_base
-    print("📂 Processing documents from Google Drive...")
     creds = authenticate_drive()
     if not creds:
         return jsonify({"error": "Google Drive authentication failed."}), 500
@@ -132,9 +130,10 @@ def process_drive():
         new_knowledge = {}
 
         for file in zip_files:
+            if processed_this_run >= limit:
+                break
             file_id = file["id"]
             file_name = file["name"]
-            print(f"📦 Downloading: {file_name}")
 
             try:
                 drive_request = service.files().get_media(fileId=file_id)
@@ -146,10 +145,8 @@ def process_drive():
                         _, done = downloader.next_chunk()
 
                 if not zipfile.is_zipfile(temp_zip_path):
-                    print(f"⚠️ Skipping {file_name} (not a valid ZIP file)")
                     continue
 
-                print(f"📂 Unzipping {file_name}...")
                 with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
                     for zip_info in zip_ref.infolist():
                         if processed_this_run >= limit:
@@ -167,8 +164,6 @@ def process_drive():
                                         log_memory()
                             except Exception as e:
                                 print(f"❌ Error reading {zip_info.filename}: {e}")
-                        else:
-                            print(f"⚠️ Skipping non-PDF file: {zip_info.filename}")
 
             except Exception as e:
                 print(f"❌ Failed to process ZIP {file_name}: {e}")
@@ -185,17 +180,14 @@ def process_drive():
         })
 
     except Exception as e:
-        print(f"❌ Google Drive processing error: {e}")
         return jsonify({"error": f"Google Drive processing failed: {str(e)}"}), 500
 
-# ✅ Query knowledge base
+# ✅ Query Knowledge Base
 @app.route("/query", methods=["GET"])
 def query_knowledge():
     question = request.args.get("question")
     if not question:
         return jsonify({"error": "No question provided."}), 400
-
-    print(f"🔎 Searching for: {question}")
 
     if index is None:
         load_faiss()
@@ -220,31 +212,65 @@ def query_knowledge():
                 "insight": insight_text[:500] + "..."
             })
 
-        if not results:
-            print("⚠️ No relevant insights found.")
-            return jsonify({"message": "No relevant insights found."})
+        return jsonify(results if results else {"message": "No relevant insights found."})
 
-        return jsonify(results)
     except Exception as e:
-        print(f"❌ Error processing query: {e}")
         return jsonify({"error": str(e)}), 500
 
-# ✅ Live TGI Insight from Make Webhook
+# ✅ Latest Insight from Make Webhook
 @app.route("/latest-insight", methods=["GET"])
 def latest_insight():
     try:
-        response = requests.get("https://make.com/hooks/insight-webhook")  # Replace with your actual Make webhook URL
+        webhook_url = "https://hook.eu2.make.com/lbsneimcf4727wq1tjli4992tsbnt46t"  # ⬅️ Replace with your Make webhook
+        response = requests.get(webhook_url)
         if response.status_code != 200:
             return jsonify({"error": "Failed to fetch insight from Make webhook."}), 500
         return jsonify(response.json())
     except Exception as e:
         return jsonify({"error": f"Error fetching latest insight: {str(e)}"}), 500
 
-# ✅ Run Flask App
+# ✅ Generate Slide/Canva Card from Insight
+@app.route("/generate-card", methods=["GET"])
+def generate_card():
+    try:
+        response = requests.get("https://salesbot-gw07.onrender.com/latest-insight")
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to fetch latest insight"}), 500
+
+        data = response.json()
+        insight = data.get("insight", "No insight available")
+        audience = data.get("audience", "General audience")
+        tone = data.get("tone", "Professional")
+
+        card_output = {
+            "slide_1": {
+                "title": "Insight of the Day",
+                "subtitle": insight
+            },
+            "slide_2": {
+                "title": f"What it means for {audience}",
+                "bullets": [
+                    "Time your message to renewal periods",
+                    "Use urgency-driven CTAs",
+                    "Remove friction in switching"
+                ]
+            },
+            "slide_3": {
+                "title": "Your Move",
+                "call_to_action": f"Launch messaging now. Use {tone.lower()} tone to grab attention."
+            }
+        }
+
+        return jsonify(card_output)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ✅ Start Server
 if __name__ == "__main__":
     print("🔥 Starting SalesBOT API...")
     port = int(os.getenv("PORT", 10000))
-    print(f"🌐 Running on port {port} (Render auto-detects this)")
+    print(f"🌐 Running on port {port}")
 
     if os.system(f"netstat -an | grep {port}") == 0:
         print("⚠️ Port already in use. Restarting server...")
@@ -252,10 +278,6 @@ if __name__ == "__main__":
 
     load_faiss()
     load_knowledge_base()
-
-    print("✅ Available routes in Flask app:")
-    for rule in app.url_map.iter_rules():
-        print(f"{rule.endpoint}: {rule.methods} -> {rule.rule}")
 
     from waitress import serve
     try:
@@ -267,5 +289,4 @@ if __name__ == "__main__":
             print("🔄 Restarting Gunicorn...")
             os.system(f"gunicorn -w 2 -b 0.0.0.0:{port} search_faiss:app")
         else:
-            print(f"❌ Unexpected error: {e}")
             raise e
