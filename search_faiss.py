@@ -87,7 +87,6 @@ def load_faiss():
     except:
         index = None
 
-
 def load_knowledge_base():
     global knowledge_base
     try:
@@ -132,7 +131,7 @@ def move_file(service, file_id, new_folder_id):
                                removeParents=previous_parents,
                                fields='id, parents').execute()
     except Exception as e:
-        print(f"⚠️ Failed to move file {file_id}: {e}")
+        print(f"\u26a0\ufe0f Failed to move file {file_id}: {e}")
 
 def categorize_file(name):
     ext = os.path.splitext(name)[-1].lower()
@@ -160,15 +159,15 @@ def extract_text(path, ext):
             doc = docx.Document(path)
             return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
     except Exception as e:
-        print(f"❌ Could not extract from {path}: {e}")
+        print(f"\u274c Could not extract from {path}: {e}")
     return ""
 
 # ✅ Main Processor
-def run_drive_processing(limit=2):
+def run_drive_processing(limit=1):
     global knowledge_base
     creds = authenticate_drive()
     if not creds:
-        print("❌ Drive auth failed")
+        print("\u274c Drive auth failed")
         return
 
     print("📁 Sorting SalesBOT Drive now...")
@@ -211,7 +210,7 @@ def run_drive_processing(limit=2):
                 gc.collect()
                 log_memory()
             except Exception as e:
-                print(f"❌ Failed: {file['name']} — {e}")
+                print(f"\u274c Failed: {file['name']} — {e}")
 
         page_token = results.get("nextPageToken", None)
         if not page_token or processed >= limit:
@@ -223,13 +222,13 @@ def run_drive_processing(limit=2):
         with open(processed_files_path, "w") as f:
             json.dump(list(processed_files), f)
     except Exception as e:
-        print(f"⚠️ Could not write processed files log: {e}")
+        print(f"\u26a0\ufe0f Could not write processed files log: {e}")
 
     if new_knowledge:
         try:
             rebuild_faiss()
         except Exception as e:
-            print(f"⚠️ Could not rebuild FAISS: {e}")
+            print(f"\u26a0\ufe0f Could not rebuild FAISS: {e}")
 
 @app.route("/", methods=["GET"])
 def home():
