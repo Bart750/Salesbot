@@ -134,7 +134,6 @@ def move_file(service, file_id, new_folder_id):
     except Exception as e:
         print(f"⚠️ Failed to move file {file_id}: {e}")
 
-
 def categorize_file(name):
     ext = os.path.splitext(name)[-1].lower()
     if ext in TEXT_TYPES:
@@ -212,10 +211,15 @@ def run_drive_processing(limit=1):
             request = service.files().get_media(fileId=file_id)
             path = os.path.join(tempfile.gettempdir(), name)
             with open(path, "wb") as f:
-                downloader = MediaIoBaseDownload(f, request)
+                downloader = MediaIoBaseDownload(f, request, chunksize=1024 * 512)
                 done = False
-                while not done:
+                timeout_counter = 0
+                while not done and timeout_counter < 20:
                     _, done = downloader.next_chunk()
+                    timeout_counter += 1
+                if not done:
+                    print(f"⚠️ Timeout while downloading {name}")
+                    continue
 
             text = extract_text(path, ext)
             category = categorize_file(name)
