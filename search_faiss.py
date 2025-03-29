@@ -188,72 +188,82 @@ def get_all_files_recursively(service, parent_id=None):
 # ✅ Main Processor
 def run_drive_processing(limit=1):
     global knowledge_base
-    creds = authenticate_drive()
-    if not creds:
-        print("❌ Drive auth failed")
-        return
-
-    print("📁 Sorting SalesBOT Drive now...")
-    service = build("drive", "v3", credentials=creds)
-    folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
-
-    files = get_all_files_recursively(service)
-    new_knowledge = {}
-    processed = 0
-
-    for file in files:
-        if processed >= limit:
-            break
-        try:
-            file_id, name = file["id"], file["name"]
-            ext = os.path.splitext(name)[-1].lower()
-            print(f"▶️ Processing file: {name}")
-            request = service.files().get_media(fileId=file_id)
-            path = os.path.join(tempfile.gettempdir(), name)
-            with open(path, "wb") as f:
-                downloader = MediaIoBaseDownload(f, request, chunksize=1024 * 512)
-                done = False
-                timeout_counter = 0
-                while not done and timeout_counter < 20:
-                    _, done = downloader.next_chunk()
-                    timeout_counter += 1
-                if not done:
-                    print(f"⚠️ Timeout while downloading {name}")
-                    continue
-
-            text = extract_text(path, ext)
-            category = categorize_file(name)
-            if text and not is_duplicate(text, name):
-                if category == "docs":
-                    new_knowledge[name] = text
-                processed += 1
-            move_file(service, file_id, folder_ids[category])
-            os.remove(path)
-            del text, path
-            gc.collect()
-            log_memory()
-            print(f"✅ Finished processing: {name}")
-        except Exception as e:
-            print(f"❌ Failed: {file.get('name')} — {e}")
-            traceback.print_exc()
-
-    knowledge_base.update(new_knowledge)
-    np.save("ai_metadata.npy", knowledge_base)
     try:
-        with open(processed_files_path, "w") as f:
-            json.dump(list(processed_files), f)
-    except Exception as e:
-        print(f"⚠️ Could not write processed files log: {e}")
+        creds = authenticate_drive()
+        if not creds:
+            print("❌ Drive auth failed")
+            return
 
-    if new_knowledge:
+        print("📁 Sorting SalesBOT Drive now...")
+        service = build("drive", "v3", credentials=creds)
+        folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
+
+        files = get_all_files_recursively(service)
+        new_knowledge = {}
+        processed = 0
+
+        for file in files:
+            if processed >= limit:
+                break
+            try:
+                file_id, name = file["id"], file["name"]
+                ext = os.path.splitext(name)[-1].lower()
+                print(f"▶️ Processing file: {name}")
+                request = service.files().get_media(fileId=file_id)
+                path = os.path.join(tempfile.gettempdir(), name)
+                with open(path, "wb") as f:
+                    downloader = MediaIoBaseDownload(f, request, chunksize=1024 * 512)
+                    done = False
+                    timeout_counter = 0
+                    while not done and timeout_counter < 20:
+                        _, done = downloader.next_chunk()
+                        timeout_counter += 1
+                    if not done:
+                        print(f"⚠️ Timeout while downloading {name}")
+                        continue
+
+                text = extract_text(path, ext)
+                category = categorize_file(name)
+                if text and not is_duplicate(text, name):
+                    if category == "docs":
+                        new_knowledge[name] = text
+                    processed += 1
+                move_file(service, file_id, folder_ids[category])
+                os.remove(path)
+                del text, path
+                gc.collect()
+                log_memory()
+                print(f"✅ Finished processing: {name}")
+            except Exception as e:
+                print(f"❌ Failed: {file.get('name')} — {e}")
+                traceback.print_exc()
+
+        knowledge_base.update(new_knowledge)
+        np.save("ai_metadata.npy", knowledge_base)
         try:
-            rebuild_faiss()
+            with open(processed_files_path, "w") as f:
+                json.dump(list(processed_files), f)
         except Exception as e:
-            print(f"⚠️ Could not rebuild FAISS: {e}")
+            print(f"⚠️ Could not write processed files log: {e}")
+
+        if new_knowledge:
+            try:
+                rebuild_faiss()
+            except Exception as e:
+                print(f"⚠️ Could not rebuild FAISS: {e}")
+
+    except Exception as top:
+        print("🔥 TOP-LEVEL CRASH 🔥")
+        traceback.print_exc()
 
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "SalesBOT is live", "sorted": len(knowledge_base)})
+
+@app.route("/mem", methods=["GET"])
+def memory_status():
+    mem = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+    return jsonify({"memory_MB": mem})
 
 @app.route("/process_drive", methods=["POST"])
 def process_drive():
