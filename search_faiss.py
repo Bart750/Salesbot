@@ -189,7 +189,7 @@ def get_all_files_iteratively(service, parent_id="root"):
     return all_files
 
 # ✅ Main Processor
-def run_drive_processing(limit=1):
+def run_drive_processing():
     global knowledge_base
     try:
         creds = authenticate_drive()
@@ -203,24 +203,24 @@ def run_drive_processing(limit=1):
 
         files = get_all_files_iteratively(service)
         new_knowledge = {}
-        processed = 0
+        total_files = len(files)
+        print(f"📦 {total_files} files found.")
 
-        for file in files:
-            if processed >= limit:
-                break
+        for i, file in enumerate(files):
             try:
                 file_id, name = file["id"], file["name"]
                 ext = os.path.splitext(name)[-1].lower()
-                print(f"▶️ Processing file: {name}")
+                print(f"▶️ [{i+1}/{total_files}] Processing file: {name}")
+
                 request = service.files().get_media(fileId=file_id)
                 path = os.path.join(tempfile.gettempdir(), name)
                 with open(path, "wb") as f:
-                    downloader = MediaIoBaseDownload(f, request, chunksize=1024 * 512)
+                    downloader = MediaIoBaseDownload(f, request, chunksize=512*1024)
                     done = False
-                    timeout_counter = 0
-                    while not done and timeout_counter < 20:
+                    counter = 0
+                    while not done and counter < 20:
                         _, done = downloader.next_chunk()
-                        timeout_counter += 1
+                        counter += 1
                     if not done:
                         print(f"⚠️ Timeout while downloading {name}")
                         continue
@@ -230,24 +230,23 @@ def run_drive_processing(limit=1):
                 if text and not is_duplicate(text, name):
                     if category == "docs":
                         new_knowledge[name] = text
-                    processed += 1
+
                 move_file(service, file_id, folder_ids[category])
                 os.remove(path)
                 del text, path
                 gc.collect()
                 log_memory()
-                print(f"✅ Finished processing: {name}")
+                print(f"✅ Done with {name}")
+                time.sleep(0.5)
+
             except Exception as e:
-                print(f"❌ Failed: {file.get('name')} — {e}")
+                print(f"❌ Error with {file.get('name')}: {e}")
                 traceback.print_exc()
 
         knowledge_base.update(new_knowledge)
         np.save("ai_metadata.npy", knowledge_base)
-        try:
-            with open(processed_files_path, "w") as f:
-                json.dump(list(processed_files), f)
-        except Exception as e:
-            print(f"⚠️ Could not write processed files log: {e}")
+        with open(processed_files_path, "w") as f:
+            json.dump(list(processed_files), f)
 
         if new_knowledge:
             try:
