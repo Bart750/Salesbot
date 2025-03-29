@@ -114,33 +114,63 @@ def home():
 def health_check():
     return jsonify({"status": "API is live", "message": "Endpoints are active."})
 
-# ✅ Drive Duplicate Scanner & Cleaner
-@app.route("/scan_drive_duplicates", methods=["POST"])
-def scan_drive_duplicates():
+# ✅ Scan and Delete Duplicates by Content
+@app.route("/clean_drive_duplicates", methods=["POST"])
+def clean_drive_duplicates():
     creds = authenticate_drive()
     if not creds:
         return jsonify({"error": "Google Drive authentication failed."}), 500
 
     try:
         service = build("drive", "v3", credentials=creds)
-        results = service.files().list(q="name contains '.zip'", fields="files(id, name, size)").execute()
-        files = results.get("files", [])
+        zip_files = service.files().list(q="name contains '.zip'", fields="files(id, name)").execute().get("files", [])
+        seen_hashes = {}
+        deleted_files = []
 
-        hash_map = {}
-        duplicates = []
-
-        for file in files:
+        for file in zip_files:
             file_id = file["id"]
             file_name = file["name"]
-            size = file.get("size", "0")
-            hash_key = hashlib.md5((file_name + str(size)).encode("utf-8")).hexdigest()
 
-            if hash_key in hash_map:
-                duplicates.append({"name": file_name, "id": file_id})
-            else:
-                hash_map[hash_key] = file_id
+            try:
+                request = service.files().get_media(fileId=file_id)
+                with tempfile.NamedTemporaryFile(delete=False) as tf:
+                    downloader = MediaIoBaseDownload(tf, request)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
+                tf_path = tf.name
 
-        return jsonify({"duplicates": duplicates, "count": len(duplicates)})
+                if not zipfile.is_zipfile(tf_path):
+                    continue
+
+                with zipfile.ZipFile(tf_path, 'r') as zip_ref:
+                    content_concat = ""
+                    for zip_info in zip_ref.infolist():
+                        if zip_info.filename.endswith(".pdf"):
+                            with zip_ref.open(zip_info) as pdf_file:
+                                try:
+                                    doc = fitz.open("pdf", pdf_file.read())
+                                    content = "".join([page.get_text("text") for page in doc[:5]])
+                                    content_concat += content.strip()
+                                    doc.close()
+                                except Exception as e:
+                                    continue
+
+                content_hash = hashlib.md5(content_concat.encode("utf-8")).hexdigest()
+
+                if content_hash in seen_hashes:
+                    service.files().delete(fileId=file_id).execute()
+                    deleted_files.append(file_name)
+                else:
+                    seen_hashes[content_hash] = file_name
+
+                os.remove(tf_path)
+
+            except Exception as e:
+                print(f"❌ Error processing file {file_name}: {e}")
+                continue
+
+        return jsonify({"message": f"Deleted {len(deleted_files)} duplicate file(s).", "deleted_files": deleted_files})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
