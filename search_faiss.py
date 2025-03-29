@@ -114,6 +114,37 @@ def home():
 def health_check():
     return jsonify({"status": "API is live", "message": "Endpoints are active."})
 
+# ✅ Drive Duplicate Scanner & Cleaner
+@app.route("/scan_drive_duplicates", methods=["POST"])
+def scan_drive_duplicates():
+    creds = authenticate_drive()
+    if not creds:
+        return jsonify({"error": "Google Drive authentication failed."}), 500
+
+    try:
+        service = build("drive", "v3", credentials=creds)
+        results = service.files().list(q="name contains '.zip'", fields="files(id, name, size)").execute()
+        files = results.get("files", [])
+
+        hash_map = {}
+        duplicates = []
+
+        for file in files:
+            file_id = file["id"]
+            file_name = file["name"]
+            size = file.get("size", "0")
+            hash_key = hashlib.md5((file_name + str(size)).encode("utf-8")).hexdigest()
+
+            if hash_key in hash_map:
+                duplicates.append({"name": file_name, "id": file_id})
+            else:
+                hash_map[hash_key] = file_id
+
+        return jsonify({"duplicates": duplicates, "count": len(duplicates)})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # ✅ Process Drive
 @app.route("/process_drive", methods=["POST"])
 def process_drive():
