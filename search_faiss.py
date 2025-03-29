@@ -164,7 +164,7 @@ def extract_text(path, ext):
     return ""
 
 # ✅ Main Processor
-def run_drive_processing(limit=5):
+def run_drive_processing(limit=2):
     global knowledge_base
     creds = authenticate_drive()
     if not creds:
@@ -207,7 +207,9 @@ def run_drive_processing(limit=5):
                     processed += 1
                 move_file(service, file_id, folder_ids[category])
                 os.remove(path)
+                del text, path
                 gc.collect()
+                log_memory()
             except Exception as e:
                 print(f"❌ Failed: {file['name']} — {e}")
 
