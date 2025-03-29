@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Optimized for Memory)
+# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Optimized for Memory + Recursive Folder Handling)
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -131,7 +131,7 @@ def move_file(service, file_id, new_folder_id):
                                removeParents=previous_parents,
                                fields='id, parents').execute()
     except Exception as e:
-        print(f"\u26a0\ufe0f Failed to move file {file_id}: {e}")
+        print(f"⚠️ Failed to move file {file_id}: {e}")
 
 def categorize_file(name):
     ext = os.path.splitext(name)[-1].lower()
@@ -159,62 +159,74 @@ def extract_text(path, ext):
             doc = docx.Document(path)
             return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
     except Exception as e:
-        print(f"\u274c Could not extract from {path}: {e}")
+        print(f"❌ Could not extract from {path}: {e}")
     return ""
+
+# ✅ Recursively collect all file IDs from nested folders
+def get_all_files_recursively(service, parent_id=None):
+    all_files = []
+    query = "mimeType='application/vnd.google-apps.folder'"
+    if parent_id:
+        query += f" and '{parent_id}' in parents"
+    folder_results = service.files().list(q=query, fields="files(id, name)").execute().get("files", [])
+
+    for folder in folder_results:
+        folder_id = folder["id"]
+        sub_files = service.files().list(q=f"'{folder_id}' in parents and not mimeType contains 'folder'",
+                                         fields="files(id, name, mimeType)").execute().get("files", [])
+        all_files.extend(sub_files)
+        all_files.extend(get_all_files_recursively(service, folder_id))
+
+    if not parent_id:
+        top_files = service.files().list(q="not mimeType contains 'folder' and 'root' in parents",
+                                         fields="files(id, name, mimeType)").execute().get("files", [])
+        all_files.extend(top_files)
+
+    return all_files
 
 # ✅ Main Processor
 def run_drive_processing(limit=1):
     global knowledge_base
     creds = authenticate_drive()
     if not creds:
-        print("\u274c Drive auth failed")
+        print("❌ Drive auth failed")
         return
 
     print("📁 Sorting SalesBOT Drive now...")
     service = build("drive", "v3", credentials=creds)
     folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
 
-    page_token = None
+    files = get_all_files_recursively(service)
     new_knowledge = {}
     processed = 0
 
-    while True:
-        results = service.files().list(q="not mimeType contains 'folder'",
-                                       fields="nextPageToken, files(id, name, mimeType)",
-                                       pageToken=page_token).execute()
-        files = results.get("files", [])
-
-        for file in files:
-            if processed >= limit:
-                break
-            try:
-                file_id, name = file["id"], file["name"]
-                ext = os.path.splitext(name)[-1].lower()
-                request = service.files().get_media(fileId=file_id)
-                path = os.path.join(tempfile.gettempdir(), name)
-                with open(path, "wb") as f:
-                    downloader = MediaIoBaseDownload(f, request)
-                    done = False
-                    while not done:
-                        _, done = downloader.next_chunk()
-
-                text = extract_text(path, ext)
-                category = categorize_file(name)
-                if text and not is_duplicate(text, name):
-                    if category == "docs":
-                        new_knowledge[name] = text
-                    processed += 1
-                move_file(service, file_id, folder_ids[category])
-                os.remove(path)
-                del text, path
-                gc.collect()
-                log_memory()
-            except Exception as e:
-                print(f"\u274c Failed: {file['name']} — {e}")
-
-        page_token = results.get("nextPageToken", None)
-        if not page_token or processed >= limit:
+    for file in files:
+        if processed >= limit:
             break
+        try:
+            file_id, name = file["id"], file["name"]
+            ext = os.path.splitext(name)[-1].lower()
+            request = service.files().get_media(fileId=file_id)
+            path = os.path.join(tempfile.gettempdir(), name)
+            with open(path, "wb") as f:
+                downloader = MediaIoBaseDownload(f, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+
+            text = extract_text(path, ext)
+            category = categorize_file(name)
+            if text and not is_duplicate(text, name):
+                if category == "docs":
+                    new_knowledge[name] = text
+                processed += 1
+            move_file(service, file_id, folder_ids[category])
+            os.remove(path)
+            del text, path
+            gc.collect()
+            log_memory()
+        except Exception as e:
+            print(f"❌ Failed: {file['name']} — {e}")
 
     knowledge_base.update(new_knowledge)
     np.save("ai_metadata.npy", knowledge_base)
@@ -222,13 +234,13 @@ def run_drive_processing(limit=1):
         with open(processed_files_path, "w") as f:
             json.dump(list(processed_files), f)
     except Exception as e:
-        print(f"\u26a0\ufe0f Could not write processed files log: {e}")
+        print(f"⚠️ Could not write processed files log: {e}")
 
     if new_knowledge:
         try:
             rebuild_faiss()
         except Exception as e:
-            print(f"\u26a0\ufe0f Could not rebuild FAISS: {e}")
+            print(f"⚠️ Could not rebuild FAISS: {e}")
 
 @app.route("/", methods=["GET"])
 def home():
