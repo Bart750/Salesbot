@@ -166,6 +166,7 @@ def run_drive_processing(limit=50):
         print("❌ Drive auth failed")
         return
 
+    print("📁 Sorting SalesBOT Drive now...")
     service = build("drive", "v3", credentials=creds)
     folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
     results = service.files().list(q="not mimeType contains 'folder'",
@@ -205,6 +206,10 @@ def run_drive_processing(limit=50):
     with open(processed_files_path, "w") as f:
         json.dump(list(processed_files), f)
     rebuild_faiss()
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"status": "SalesBOT is live", "sorted": len(knowledge_base)})
 
 @app.route("/process_drive", methods=["POST"])
 def process_drive():
