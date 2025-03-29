@@ -1,4 +1,4 @@
-# ✅ Enhanced SalesBOT Script with Auto-Sorting and Sync Fix
+# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -36,10 +36,13 @@ if os.path.exists(processed_files_path):
         processed_files = set(json.load(f))
 
 FOLDER_NAMES = {
-    "raw_zips": "raw_zips",
-    "duplicates": "duplicates",
-    "processed": "processed_pdfs"
+    "docs": "documents",
+    "code": "code_files",
+    "misc": "miscellaneous"
 }
+
+TEXT_TYPES = [".pdf", ".txt"]
+CODE_TYPES = [".py", ".ipynb", ".js", ".json"]
 
 # ✅ Kill stuck servers
 def kill_existing_processes():
@@ -85,7 +88,7 @@ def load_knowledge_base():
     except:
         knowledge_base = {}
 
-# ✅ Util logic
+# ✅ Utils
 def is_duplicate(content, filename):
     h = hashlib.md5(content.encode("utf-8")).hexdigest()
     if h in file_hashes or filename in processed_files:
@@ -121,54 +124,68 @@ def move_file(service, file_id, new_folder_id):
                            removeParents=previous_parents,
                            fields='id, parents').execute()
 
-# ✅ Core processing logic used in both route and thread
-def run_drive_processing(limit=3):
+def categorize_file(name):
+    ext = os.path.splitext(name)[-1].lower()
+    if ext in TEXT_TYPES:
+        return "docs"
+    if ext in CODE_TYPES:
+        return "code"
+    return "misc"
+
+def extract_text(path, ext):
+    try:
+        if ext == ".pdf":
+            doc = fitz.open(path)
+            text = "".join([p.get_text("text") for p in doc[:10]]).strip()
+            doc.close()
+            return text
+        elif ext == ".txt":
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except Exception as e:
+        print(f"❌ Could not extract from {path}: {e}")
+    return ""
+
+# ✅ Main Processor
+
+def run_drive_processing(limit=25):
     global knowledge_base
     creds = authenticate_drive()
     if not creds:
-        print(f"Drive auth failed")
+        print("❌ Drive auth failed")
         return
 
     service = build("drive", "v3", credentials=creds)
-    parent_id = None
-    folder_ids = {k: ensure_folder(service, v, parent_id) for k, v in FOLDER_NAMES.items()}
-
-    results = service.files().list(q="name contains '.zip'",
-                                   fields="files(id, name, parents)").execute()
+    folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
+    results = service.files().list(q="not mimeType contains 'folder'",
+                                   fields="files(id, name, mimeType)").execute()
     files = results.get("files", [])
-    processed = 0
+
     new_knowledge = {}
+    processed = 0
 
     for file in files:
         if processed >= limit:
             break
         try:
             file_id, name = file["id"], file["name"]
+            ext = os.path.splitext(name)[-1].lower()
             request = service.files().get_media(fileId=file_id)
-            temp_path = os.path.join(tempfile.gettempdir(), name)
-            with open(temp_path, "wb") as f:
+            path = os.path.join(tempfile.gettempdir(), name)
+            with open(path, "wb") as f:
                 downloader = MediaIoBaseDownload(f, request)
                 done = False
                 while not done:
                     _, done = downloader.next_chunk()
 
-            if not zipfile.is_zipfile(temp_path):
-                continue
-
-            with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-                for zi in zip_ref.infolist():
-                    if processed >= limit:
-                        break
-                    if zi.filename.endswith(".pdf"):
-                        with zip_ref.open(zi) as f:
-                            doc = fitz.open("pdf", f.read())
-                            text = "".join([p.get_text("text") for p in doc[:10]]).strip()
-                            doc.close()
-                            if text and not is_duplicate(text, zi.filename):
-                                new_knowledge[zi.filename] = text
-                                processed += 1
-                                log_memory()
-            move_file(service, file_id, folder_ids['raw_zips'])
+            text = extract_text(path, ext)
+            category = categorize_file(name)
+            if text and not is_duplicate(text, name):
+                if category == "docs":
+                    new_knowledge[name] = text
+                processed += 1
+            move_file(service, file_id, folder_ids[category])
+            os.remove(path)
         except Exception as e:
             print(f"❌ Failed: {file['name']} — {e}")
 
@@ -180,54 +197,8 @@ def run_drive_processing(limit=3):
 
 @app.route("/process_drive", methods=["POST"])
 def process_drive():
-    limit = int(request.args.get("limit", 3))
-    run_drive_processing(limit)
-    return jsonify({"message": "Drive processing completed."})
-
-@app.route("/clean_drive_duplicates", methods=["GET"])
-def clean_drive_duplicates():
-    creds = authenticate_drive()
-    if not creds:
-        return jsonify({"error": "Drive auth failed"}), 500
-    service = build("drive", "v3", credentials=creds)
-    files = service.files().list(q="mimeType='application/zip'",
-                                 fields="files(id, name, parents)").execute().get("files", [])
-    folder_id = ensure_folder(service, FOLDER_NAMES['duplicates'])
-    seen, deleted = {}, []
-
-    for file in files:
-        try:
-            file_id, name = file["id"], file["name"]
-            request = service.files().get_media(fileId=file_id)
-            with tempfile.NamedTemporaryFile(delete=False) as tf:
-                downloader = MediaIoBaseDownload(tf, request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
-            path = tf.name
-            if not zipfile.is_zipfile(path):
-                continue
-
-            concat = ""
-            with zipfile.ZipFile(path, 'r') as z:
-                for zi in z.infolist():
-                    if zi.filename.endswith(".pdf"):
-                        with z.open(zi) as f:
-                            doc = fitz.open("pdf", f.read())
-                            concat += "".join([p.get_text("text") for p in doc[:5]])
-                            doc.close()
-
-            h = hashlib.md5(concat.encode("utf-8")).hexdigest()
-            if h in seen:
-                move_file(service, file_id, folder_id)
-                deleted.append(name)
-            else:
-                seen[h] = name
-            os.remove(path)
-        except Exception as e:
-            print(f"❌ Error: {file['name']} — {e}")
-
-    return jsonify({"message": f"Moved {len(deleted)} duplicates.", "deleted_files": deleted})
+    run_drive_processing()
+    return jsonify({"message": "Drive processed and sorted."})
 
 @app.route("/query")
 def query():
@@ -258,9 +229,8 @@ def auto_sync_drive(interval=5):
         while True:
             try:
                 with app.test_request_context():
-                    print("🔁 Auto-syncing SalesBOT Drive...")
-                    run_drive_processing(limit=3)
-                    clean_drive_duplicates()
+                    print("🔁 Auto-sorting Google Drive...")
+                    run_drive_processing()
             except Exception as e:
                 print(f"Auto-sync error: {e}")
             time.sleep(interval * 60)
@@ -271,12 +241,12 @@ signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    print(f"Starting on port {port}")
+    print(f"🚀 Starting SalesBOT on port {port}")
     if os.system(f"netstat -an | grep {port}") == 0:
         kill_existing_processes()
     load_faiss()
     load_knowledge_base()
+    run_drive_processing()  # 🚨 Auto-sort immediately on startup
     auto_sync_drive()
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
-
