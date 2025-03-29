@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Optimized for Memory + Recursive Folder Handling)
+# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Optimized for Memory + Iterative Folder Handling)
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -163,25 +163,28 @@ def extract_text(path, ext):
         print(f"❌ Could not extract from {path}: {e}")
     return ""
 
-# ✅ Recursively collect all file IDs from nested folders
-def get_all_files_recursively(service, parent_id=None):
+# ✅ Iterative file collector (no recursion)
+def get_all_files_iteratively(service, parent_id="root"):
+    stack = [parent_id]
     all_files = []
-    query = "mimeType='application/vnd.google-apps.folder'"
-    if parent_id:
-        query += f" and '{parent_id}' in parents"
-    folder_results = service.files().list(q=query, fields="files(id, name)").execute().get("files", [])
 
-    for folder in folder_results:
-        folder_id = folder["id"]
-        sub_files = service.files().list(q=f"'{folder_id}' in parents and not mimeType contains 'folder'",
-                                         fields="files(id, name, mimeType, size)").execute().get("files", [])
-        all_files.extend(sub_files)
-        all_files.extend(get_all_files_recursively(service, folder_id))
+    while stack:
+        current_folder = stack.pop()
+        try:
+            folders = service.files().list(
+                q=f"mimeType='application/vnd.google-apps.folder' and '{current_folder}' in parents",
+                fields="files(id, name)"
+            ).execute().get("files", [])
+            for folder in folders:
+                stack.append(folder["id"])
 
-    if not parent_id:
-        top_files = service.files().list(q="not mimeType contains 'folder' and 'root' in parents",
-                                         fields="files(id, name, mimeType, size)").execute().get("files", [])
-        all_files.extend(top_files)
+            files = service.files().list(
+                q=f"not mimeType contains 'folder' and '{current_folder}' in parents",
+                fields="files(id, name, mimeType, size)"
+            ).execute().get("files", [])
+            all_files.extend(files)
+        except Exception as e:
+            print(f"⚠️ Failed to scan folder {current_folder}: {e}")
 
     return all_files
 
@@ -198,7 +201,7 @@ def run_drive_processing(limit=1):
         service = build("drive", "v3", credentials=creds)
         folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
 
-        files = get_all_files_recursively(service)
+        files = get_all_files_iteratively(service)
         new_knowledge = {}
         processed = 0
 
