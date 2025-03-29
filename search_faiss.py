@@ -21,6 +21,7 @@ import gc
 import psutil
 import requests
 import threading
+import traceback
 
 app = Flask(__name__)
 
@@ -133,6 +134,7 @@ def move_file(service, file_id, new_folder_id):
     except Exception as e:
         print(f"⚠️ Failed to move file {file_id}: {e}")
 
+
 def categorize_file(name):
     ext = os.path.splitext(name)[-1].lower()
     if ext in TEXT_TYPES:
@@ -173,13 +175,13 @@ def get_all_files_recursively(service, parent_id=None):
     for folder in folder_results:
         folder_id = folder["id"]
         sub_files = service.files().list(q=f"'{folder_id}' in parents and not mimeType contains 'folder'",
-                                         fields="files(id, name, mimeType)").execute().get("files", [])
+                                         fields="files(id, name, mimeType, size)").execute().get("files", [])
         all_files.extend(sub_files)
         all_files.extend(get_all_files_recursively(service, folder_id))
 
     if not parent_id:
         top_files = service.files().list(q="not mimeType contains 'folder' and 'root' in parents",
-                                         fields="files(id, name, mimeType)").execute().get("files", [])
+                                         fields="files(id, name, mimeType, size)").execute().get("files", [])
         all_files.extend(top_files)
 
     return all_files
@@ -206,6 +208,7 @@ def run_drive_processing(limit=1):
         try:
             file_id, name = file["id"], file["name"]
             ext = os.path.splitext(name)[-1].lower()
+            print(f"▶️ Processing file: {name}")
             request = service.files().get_media(fileId=file_id)
             path = os.path.join(tempfile.gettempdir(), name)
             with open(path, "wb") as f:
@@ -225,8 +228,10 @@ def run_drive_processing(limit=1):
             del text, path
             gc.collect()
             log_memory()
+            print(f"✅ Finished processing: {name}")
         except Exception as e:
-            print(f"❌ Failed: {file['name']} — {e}")
+            print(f"❌ Failed: {file.get('name')} — {e}")
+            traceback.print_exc()
 
     knowledge_base.update(new_knowledge)
     np.save("ai_metadata.npy", knowledge_base)
@@ -273,30 +278,15 @@ def query():
         results.append({"source": keys[idx], "insight": knowledge_base[keys[idx]][:500] + "..."})
     return jsonify(results)
 
-# ✅ Auto-sync
-def auto_sync_drive(interval=5):
-    def loop():
-        while True:
-            try:
-                with app.test_request_context():
-                    print("🔁 Auto-sorting Google Drive...")
-                    run_drive_processing()
-            except Exception as e:
-                print(f"Auto-sync error: {e}")
-            time.sleep(interval * 60)
-    threading.Thread(target=loop, daemon=True).start()
-
 signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
 signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     print(f"🚀 Starting SalesBOT on port {port}")
-    if os.system(f"netstat -an | grep {port}") == 0:
-        kill_existing_processes()
+    kill_existing_processes()
     load_faiss()
     load_knowledge_base()
     run_drive_processing()  # 🚨 Auto-sort immediately on startup
-    auto_sync_drive()
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
