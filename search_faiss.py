@@ -1,4 +1,4 @@
-# ✅ Fixed and Cleaned SalesBOT Script
+# ✅ Enhanced SalesBOT Script with Auto-Sorting by Folder
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -35,93 +35,108 @@ if os.path.exists(processed_files_path):
     with open(processed_files_path, "r") as f:
         processed_files = set(json.load(f))
 
-# ✅ Kill existing server processes
+FOLDER_NAMES = {
+    "raw_zips": "raw_zips",
+    "duplicates": "duplicates",
+    "processed": "processed_pdfs"
+}
+
+# ✅ Kill stuck servers
 def kill_existing_processes():
     subprocess.run(["pkill", "-f", "gunicorn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["pkill", "-f", "waitress"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
 
-# ✅ Authenticate Google Drive
-
+# ✅ Google Drive auth
 def authenticate_drive():
     try:
-        SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
-        if SERVICE_ACCOUNT_JSON:
-            creds = service_account.Credentials.from_service_account_info(
-                json.loads(SERVICE_ACCOUNT_JSON), scopes=SCOPES)
+        json_data = os.getenv("SERVICE_ACCOUNT_JSON")
+        if json_data:
+            creds = service_account.Credentials.from_service_account_info(json.loads(json_data), scopes=SCOPES)
         else:
-            SERVICE_ACCOUNT_FILE = "service_account.json"
-            creds = service_account.Credentials.from_service_account_file(
-                SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+            creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
         return creds
     except Exception as e:
-        print(f"❌ Auth error: {e}")
+        print(f"Auth failed: {e}")
         return None
 
-# ✅ FAISS Handling
-
+# ✅ FAISS logic
 def rebuild_faiss():
     global index
     if not knowledge_base:
         return
-    embeddings = [model.encode([text], convert_to_numpy=True)[0].astype("float32") for text in knowledge_base.values()]
+    embeddings = [model.encode([t], convert_to_numpy=True)[0].astype("float32") for t in knowledge_base.values()]
     index = faiss.IndexFlatL2(len(embeddings[0]))
     index.add(np.array(embeddings))
     faiss.write_index(index, "ai_search_index.faiss")
-    print(f"✅ FAISS rebuilt with {len(embeddings)} entries.")
 
 def load_faiss():
     global index
     try:
         index = faiss.read_index("ai_search_index.faiss")
         index.nprobe = 1
-        print("✅ FAISS index loaded.")
     except:
-        print("⚠️ No FAISS index found.")
         index = None
 
 def load_knowledge_base():
     global knowledge_base
     try:
         knowledge_base = dict(np.load("ai_metadata.npy", allow_pickle=True).item())
-        print(f"✅ Knowledge base loaded with {len(knowledge_base)} entries.")
     except:
-        print("⚠️ No existing knowledge base found.")
+        knowledge_base = {}
 
-# ✅ Helper Functions
-
+# ✅ Util logic
 def is_duplicate(content, filename):
-    content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
-    if content_hash in file_hashes or filename in processed_files:
+    h = hashlib.md5(content.encode("utf-8")).hexdigest()
+    if h in file_hashes or filename in processed_files:
         return True
-    file_hashes.add(content_hash)
+    file_hashes.add(h)
     processed_files.add(filename)
     return False
 
 def log_memory():
     mem = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-    print(f"🔍 RAM: {mem:.2f} MB")
+    print(f"RAM: {mem:.2f} MB")
 
-# ✅ Routes
-@app.route("/")
-def home():
-    return jsonify({"status": "OK", "message": "SalesBOT API running."})
+def ensure_folder(service, name, parent_id=None):
+    results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{name}'",
+                                   spaces='drive', fields="files(id, name)").execute()
+    folders = results.get("files", [])
+    if folders:
+        return folders[0]['id']
+    file_metadata = {
+        'name': name,
+        'mimeType': 'application/vnd.google-apps.folder'
+    }
+    if parent_id:
+        file_metadata['parents'] = [parent_id]
+    folder = service.files().create(body=file_metadata, fields='id').execute()
+    return folder['id']
 
-@app.route("/health")
-def health():
-    return jsonify({"status": "Live"})
+def move_file(service, file_id, new_folder_id):
+    file = service.files().get(fileId=file_id, fields='parents').execute()
+    previous_parents = ",".join(file.get('parents'))
+    service.files().update(fileId=file_id,
+                           addParents=new_folder_id,
+                           removeParents=previous_parents,
+                           fields='id, parents').execute()
 
 @app.route("/process_drive", methods=["POST"])
 def process_drive():
     creds = authenticate_drive()
     if not creds:
-        return jsonify({"error": "Drive authentication failed."}), 500
+        return jsonify({"error": "Drive auth failed"}), 500
 
     service = build("drive", "v3", credentials=creds)
-    results = service.files().list(q="name contains '.zip'", fields="files(id, name)").execute()
+    parent_id = None
+    folder_ids = {k: ensure_folder(service, v, parent_id) for k, v in FOLDER_NAMES.items()}
+
+    results = service.files().list(q="name contains '.zip'",
+                                   fields="files(id, name, parents)").execute()
     files = results.get("files", [])
     limit = int(request.args.get("limit", 3))
-    processed, new_knowledge = 0, {}
+    processed = 0
+    new_knowledge = {}
 
     for file in files:
         if processed >= limit:
@@ -152,6 +167,7 @@ def process_drive():
                                 new_knowledge[zi.filename] = text
                                 processed += 1
                                 log_memory()
+            move_file(service, file_id, folder_ids['raw_zips'])
         except Exception as e:
             print(f"❌ Failed: {file['name']} — {e}")
 
@@ -162,18 +178,21 @@ def process_drive():
     rebuild_faiss()
     return jsonify({"message": f"Processed {processed} files.", "files": list(new_knowledge.keys())})
 
-@app.route("/clean_drive_duplicates", methods=["GET", "POST"])
+@app.route("/clean_drive_duplicates", methods=["GET"])
 def clean_drive_duplicates():
     creds = authenticate_drive()
     if not creds:
-        return jsonify({"error": "Drive auth failed."}), 500
+        return jsonify({"error": "Drive auth failed"}), 500
     service = build("drive", "v3", credentials=creds)
-    files = service.files().list(q="mimeType='application/zip'", fields="files(id, name)").execute().get("files", [])
+    files = service.files().list(q="mimeType='application/zip'",
+                                 fields="files(id, name, parents)").execute().get("files", [])
+    folder_id = ensure_folder(service, FOLDER_NAMES['duplicates'])
     seen, deleted = {}, []
 
     for file in files:
         try:
-            request = service.files().get_media(fileId=file["id"])
+            file_id, name = file["id"], file["name"]
+            request = service.files().get_media(fileId=file_id)
             with tempfile.NamedTemporaryFile(delete=False) as tf:
                 downloader = MediaIoBaseDownload(tf, request)
                 done = False
@@ -188,87 +207,67 @@ def clean_drive_duplicates():
                 for zi in z.infolist():
                     if zi.filename.endswith(".pdf"):
                         with z.open(zi) as f:
-                            try:
-                                doc = fitz.open("pdf", f.read())
-                                concat += "".join([p.get_text("text") for p in doc[:5]])
-                                doc.close()
-                            except:
-                                continue
+                            doc = fitz.open("pdf", f.read())
+                            concat += "".join([p.get_text("text") for p in doc[:5]])
+                            doc.close()
 
-            content_hash = hashlib.md5(concat.encode("utf-8")).hexdigest()
-            if content_hash in seen:
-                service.files().delete(fileId=file["id"]).execute()
-                deleted.append(file["name"])
+            h = hashlib.md5(concat.encode("utf-8")).hexdigest()
+            if h in seen:
+                move_file(service, file_id, folder_id)
+                deleted.append(name)
             else:
-                seen[content_hash] = file["name"]
+                seen[h] = name
             os.remove(path)
         except Exception as e:
-            print(f"❌ File error: {file['name']} — {e}")
+            print(f"❌ Error: {file['name']} — {e}")
 
-    return jsonify({"message": f"Deleted {len(deleted)} duplicates.", "deleted_files": deleted})
+    return jsonify({"message": f"Moved {len(deleted)} duplicates.", "deleted_files": deleted})
 
 @app.route("/query")
-def query_knowledge():
+def query():
     question = request.args.get("question")
     if not question:
         return jsonify({"error": "No question provided."}), 400
-
     if index is None:
         load_faiss()
     if not knowledge_base:
         load_knowledge_base()
     if index is None:
-        return jsonify({"error": "FAISS not available."}), 500
+        return jsonify({"error": "No FAISS index"}), 500
 
-    try:
-        query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
-        D, I = index.search(query_embedding, 3)
-        keys = list(knowledge_base.keys())
-        results = []
-        for idx in I[0]:
-            if idx == -1 or idx >= len(keys):
-                continue
-            results.append({"source": keys[idx], "insight": knowledge_base[keys[idx]][:500] + "..."})
-        return jsonify(results)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
+    D, I = index.search(query_embedding, 3)
+    keys = list(knowledge_base.keys())
+    results = []
+    for idx in I[0]:
+        if idx == -1 or idx >= len(keys):
+            continue
+        results.append({"source": keys[idx], "insight": knowledge_base[keys[idx]][:500] + "..."})
+    return jsonify(results)
 
-# ✅ Auto Sync Drive
-
+# ✅ Auto-sync
 def auto_sync_drive(interval=10):
     def loop():
         while True:
-            print("🔁 Auto-syncing...")
             try:
                 with app.test_request_context():
                     process_drive()
                     clean_drive_duplicates()
             except Exception as e:
-                print(f"❌ Sync error: {e}")
+                print(f"Auto-sync error: {e}")
             time.sleep(interval * 60)
-
     threading.Thread(target=loop, daemon=True).start()
 
-# ✅ Graceful shutdown
 signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
 signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
 
-# ✅ Start API
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    print(f"🚀 Starting on port {port}")
+    print(f"Starting on port {port}")
     if os.system(f"netstat -an | grep {port}") == 0:
         kill_existing_processes()
     load_faiss()
     load_knowledge_base()
     auto_sync_drive()
-
     from waitress import serve
-    try:
-        serve(app, host="0.0.0.0", port=port)
-    except OSError as e:
-        if "Address already in use" in str(e):
-            kill_existing_processes()
-            os.system(f"gunicorn -w 2 -b 0.0.0.0:{port} search_faiss:app")
-        else:
-            raise e
+    serve(app, host="0.0.0.0", port=port)
