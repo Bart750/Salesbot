@@ -22,6 +22,17 @@ import threading
 
 app = Flask(__name__)
 
+def rebuild_faiss():
+    global index
+    if not knowledge_base:
+        return
+    embeddings = [model.encode([text], convert_to_numpy=True)[0].astype("float32") for text in knowledge_base.values()]
+    index = faiss.IndexFlatL2(len(embeddings[0]))
+    index.add(np.array(embeddings))
+    faiss.write_index(index, "ai_search_index.faiss")
+    print(f"✅ FAISS index rebuilt. Total docs: {len(knowledge_base)}")
+
+
 # ✅ Kill existing Gunicorn & Waitress processes
 def kill_existing_processes():
     print("🛑 Killing any existing Gunicorn & Waitress processes...")
@@ -69,11 +80,11 @@ def load_faiss():
 def load_knowledge_base():
     global knowledge_base
     try:
-        knowledge_base = np.load("ai_metadata.npy", allow_pickle=True).item()
-        print("✅ Knowledge base loaded successfully.")
-    except Exception as e:
-        print(f"❌ Error loading knowledge base: {e}")
-        knowledge_base = {}
+         knowledge_base.update(new_knowledge)
+        np.save("ai_metadata.npy", knowledge_base)
+        with open(processed_files_path, "w") as f:
+            json.dump(list(processed_files), f)
+        rebuild_faiss()
 
 # ✅ Remove Duplicates
 file_hashes = set()
@@ -133,7 +144,7 @@ def clean_drive_duplicates():
 
     try:
         service = build("drive", "v3", credentials=creds)
-        zip_files = service.files().list(q="name contains '.zip'", fields="files(id, name)").execute().get("files", [])
+       zip_files = service.files().list(q="mimeType='application/zip'", fields="files(id, name)").execute().get("files", [])
         seen_hashes = {}
         deleted_files = []
 
@@ -191,6 +202,7 @@ def process_drive():
     global knowledge_base
     creds = authenticate_drive()
     if not creds:
+        print(f"🧠 Total knowledge base size: {len(knowledge_base)}")
         return jsonify({"error": "Google Drive authentication failed."}), 500
 
     try:
