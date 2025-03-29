@@ -18,6 +18,7 @@ import tempfile
 import gc
 import psutil
 import requests
+import threading
 
 app = Flask(__name__)
 
@@ -34,10 +35,14 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 def authenticate_drive():
     try:
-        SERVICE_ACCOUNT_JSON = json.loads(os.getenv("SERVICE_ACCOUNT_JSON", "{}"))
-        if not SERVICE_ACCOUNT_JSON:
-            raise ValueError("❌ No service account credentials found in environment variables.")
-        creds = service_account.Credentials.from_service_account_info(SERVICE_ACCOUNT_JSON, scopes=SCOPES)
+        SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+        if SERVICE_ACCOUNT_JSON:
+            creds = service_account.Credentials.from_service_account_info(json.loads(SERVICE_ACCOUNT_JSON), scopes=SCOPES)
+        else:
+            SERVICE_ACCOUNT_FILE = "service_account.json"
+            if not os.path.exists(SERVICE_ACCOUNT_FILE):
+                raise ValueError("❌ No service account found.")
+            creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
         return creds
     except Exception as e:
         print(f"❌ Error authenticating Google Drive: {e}")
@@ -217,54 +222,21 @@ def query_knowledge():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ✅ Latest Insight from Make Webhook
-@app.route("/latest-insight", methods=["GET"])
-def latest_insight():
-    try:
-        webhook_url = "https://hook.eu2.make.com/lbsneimcf4727wq1tjli4992tsbnt46t"  # ⬅️ Replace with your Make webhook
-        response = requests.get(webhook_url)
-        if response.status_code != 200:
-            return jsonify({"error": "Failed to fetch insight from Make webhook."}), 500
-        return jsonify(response.json())
-    except Exception as e:
-        return jsonify({"error": f"Error fetching latest insight: {str(e)}"}), 500
+# ✅ Auto-sync Google Drive
 
-# ✅ Generate Slide/Canva Card from Insight
-@app.route("/generate-card", methods=["GET"])
-def generate_card():
-    try:
-        response = requests.get("https://salesbot-gw07.onrender.com/latest-insight")
-        if response.status_code != 200:
-            return jsonify({"error": "Failed to fetch latest insight"}), 500
+def auto_sync_drive(interval_minutes=10):
+    def sync_loop():
+        while True:
+            print("🔄 Auto-syncing Google Drive...")
+            try:
+                with app.test_request_context():
+                    process_drive()
+            except Exception as e:
+                print(f"❌ Auto-sync error: {e}")
+            time.sleep(interval_minutes * 60)
 
-        data = response.json()
-        insight = data.get("insight", "No insight available")
-        audience = data.get("audience", "General audience")
-        tone = data.get("tone", "Professional")
-
-        card_output = {
-            "slide_1": {
-                "title": "Insight of the Day",
-                "subtitle": insight
-            },
-            "slide_2": {
-                "title": f"What it means for {audience}",
-                "bullets": [
-                    "Time your message to renewal periods",
-                    "Use urgency-driven CTAs",
-                    "Remove friction in switching"
-                ]
-            },
-            "slide_3": {
-                "title": "Your Move",
-                "call_to_action": f"Launch messaging now. Use {tone.lower()} tone to grab attention."
-            }
-        }
-
-        return jsonify(card_output)
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    thread = threading.Thread(target=sync_loop, daemon=True)
+    thread.start()
 
 # ✅ Start Server
 if __name__ == "__main__":
@@ -278,6 +250,7 @@ if __name__ == "__main__":
 
     load_faiss()
     load_knowledge_base()
+    auto_sync_drive(interval_minutes=10)
 
     from waitress import serve
     try:
