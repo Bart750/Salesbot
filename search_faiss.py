@@ -258,10 +258,15 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     print(f"🚀 Starting SalesBOT on port {port}")
     if os.system(f"netstat -an | grep {port}") == 0:
+        print("⚠️ Port in use, killing old processes...")
         kill_existing_processes()
+    print("🧠 Loading FAISS + Knowledge Base")
     load_faiss()
     load_knowledge_base()
-    run_drive_processing()  # 🚨 Auto-sort immediately on startup
+    print("📁 Sorting SalesBOT Drive now...")
+    run_drive_processing()
+    print("🔁 Starting Auto-Sync")
     auto_sync_drive()
     from waitress import serve
+    print("🔥 Serving Flask with Waitress")
     serve(app, host="0.0.0.0", port=port)
