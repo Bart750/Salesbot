@@ -122,12 +122,15 @@ def ensure_folder(service, name, parent_id=None):
     return folder['id']
 
 def move_file(service, file_id, new_folder_id):
-    file = service.files().get(fileId=file_id, fields='parents').execute()
-    previous_parents = ",".join(file.get('parents'))
-    service.files().update(fileId=file_id,
-                           addParents=new_folder_id,
-                           removeParents=previous_parents,
-                           fields='id, parents').execute()
+    try:
+        file = service.files().get(fileId=file_id, fields='parents').execute()
+        previous_parents = ",".join(file.get('parents'))
+        service.files().update(fileId=file_id,
+                               addParents=new_folder_id,
+                               removeParents=previous_parents,
+                               fields='id, parents').execute()
+    except Exception as e:
+        print(f"⚠️ Failed to move file {file_id}: {e}")
 
 def categorize_file(name):
     ext = os.path.splitext(name)[-1].lower()
@@ -169,42 +172,53 @@ def run_drive_processing(limit=50):
     print("📁 Sorting SalesBOT Drive now...")
     service = build("drive", "v3", credentials=creds)
     folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
-    results = service.files().list(q="not mimeType contains 'folder'",
-                                   fields="files(id, name, mimeType)").execute()
-    files = results.get("files", [])
 
+    page_token = None
     new_knowledge = {}
     processed = 0
 
-    for file in files:
-        if processed >= limit:
-            break
-        try:
-            file_id, name = file["id"], file["name"]
-            ext = os.path.splitext(name)[-1].lower()
-            request = service.files().get_media(fileId=file_id)
-            path = os.path.join(tempfile.gettempdir(), name)
-            with open(path, "wb") as f:
-                downloader = MediaIoBaseDownload(f, request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
+    while True:
+        results = service.files().list(q="not mimeType contains 'folder'",
+                                       fields="nextPageToken, files(id, name, mimeType)",
+                                       pageToken=page_token).execute()
+        files = results.get("files", [])
 
-            text = extract_text(path, ext)
-            category = categorize_file(name)
-            if text and not is_duplicate(text, name):
-                if category == "docs":
-                    new_knowledge[name] = text
-                processed += 1
-            move_file(service, file_id, folder_ids[category])
-            os.remove(path)
-        except Exception as e:
-            print(f"❌ Failed: {file['name']} — {e}")
+        for file in files:
+            if processed >= limit:
+                break
+            try:
+                file_id, name = file["id"], file["name"]
+                ext = os.path.splitext(name)[-1].lower()
+                request = service.files().get_media(fileId=file_id)
+                path = os.path.join(tempfile.gettempdir(), name)
+                with open(path, "wb") as f:
+                    downloader = MediaIoBaseDownload(f, request)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
+
+                text = extract_text(path, ext)
+                category = categorize_file(name)
+                if text and not is_duplicate(text, name):
+                    if category == "docs":
+                        new_knowledge[name] = text
+                    processed += 1
+                move_file(service, file_id, folder_ids[category])
+                os.remove(path)
+            except Exception as e:
+                print(f"❌ Failed: {file['name']} — {e}")
+
+        page_token = results.get("nextPageToken", None)
+        if not page_token or processed >= limit:
+            break
 
     knowledge_base.update(new_knowledge)
     np.save("ai_metadata.npy", knowledge_base)
-    with open(processed_files_path, "w") as f:
-        json.dump(list(processed_files), f)
+    try:
+        with open(processed_files_path, "w") as f:
+            json.dump(list(processed_files), f)
+    except Exception as e:
+        print(f"⚠️ Could not write processed files log: {e}")
     rebuild_faiss()
 
 @app.route("/", methods=["GET"])
@@ -258,15 +272,10 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     print(f"🚀 Starting SalesBOT on port {port}")
     if os.system(f"netstat -an | grep {port}") == 0:
-        print("⚠️ Port in use, killing old processes...")
         kill_existing_processes()
-    print("🧠 Loading FAISS + Knowledge Base")
     load_faiss()
     load_knowledge_base()
-    print("📁 Sorting SalesBOT Drive now...")
-    run_drive_processing()
-    print("🔁 Starting Auto-Sync")
+    run_drive_processing()  # 🚨 Auto-sort immediately on startup
     auto_sync_drive()
     from waitress import serve
-    print("🔥 Serving Flask with Waitress")
     serve(app, host="0.0.0.0", port=port)
