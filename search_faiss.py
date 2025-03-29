@@ -1,4 +1,4 @@
-# ✅ Enhanced SalesBOT Script with Auto-Sorting by Folder
+# ✅ Enhanced SalesBOT Script with Auto-Sorting and Sync Fix
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -121,11 +121,13 @@ def move_file(service, file_id, new_folder_id):
                            removeParents=previous_parents,
                            fields='id, parents').execute()
 
-@app.route("/process_drive", methods=["POST"])
-def process_drive():
+# ✅ Core processing logic used in both route and thread
+def run_drive_processing(limit=3):
+    global knowledge_base
     creds = authenticate_drive()
     if not creds:
-        return jsonify({"error": "Drive auth failed"}), 500
+        print(f"Drive auth failed")
+        return
 
     service = build("drive", "v3", credentials=creds)
     parent_id = None
@@ -134,7 +136,6 @@ def process_drive():
     results = service.files().list(q="name contains '.zip'",
                                    fields="files(id, name, parents)").execute()
     files = results.get("files", [])
-    limit = int(request.args.get("limit", 3))
     processed = 0
     new_knowledge = {}
 
@@ -176,7 +177,12 @@ def process_drive():
     with open(processed_files_path, "w") as f:
         json.dump(list(processed_files), f)
     rebuild_faiss()
-    return jsonify({"message": f"Processed {processed} files.", "files": list(new_knowledge.keys())})
+
+@app.route("/process_drive", methods=["POST"])
+def process_drive():
+    limit = int(request.args.get("limit", 3))
+    run_drive_processing(limit)
+    return jsonify({"message": "Drive processing completed."})
 
 @app.route("/clean_drive_duplicates", methods=["GET"])
 def clean_drive_duplicates():
@@ -246,12 +252,14 @@ def query():
     return jsonify(results)
 
 # ✅ Auto-sync
-def auto_sync_drive(interval=10):
+
+def auto_sync_drive(interval=5):
     def loop():
         while True:
             try:
                 with app.test_request_context():
-                    process_drive()
+                    print("🔁 Auto-syncing SalesBOT Drive...")
+                    run_drive_processing(limit=3)
                     clean_drive_duplicates()
             except Exception as e:
                 print(f"Auto-sync error: {e}")
@@ -271,3 +279,4 @@ if __name__ == "__main__":
     auto_sync_drive()
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
+
