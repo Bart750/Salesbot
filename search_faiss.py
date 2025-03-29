@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Fixed & Extended)
+# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Optimized for Memory)
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -77,6 +77,7 @@ def rebuild_faiss():
     index = faiss.IndexFlatL2(len(embeddings[0]))
     index.add(np.array(embeddings))
     faiss.write_index(index, "ai_search_index.faiss")
+    gc.collect()
 
 def load_faiss():
     global index
@@ -85,6 +86,7 @@ def load_faiss():
         index.nprobe = 1
     except:
         index = None
+
 
 def load_knowledge_base():
     global knowledge_base
@@ -162,7 +164,7 @@ def extract_text(path, ext):
     return ""
 
 # ✅ Main Processor
-def run_drive_processing(limit=50):
+def run_drive_processing(limit=5):
     global knowledge_base
     creds = authenticate_drive()
     if not creds:
@@ -205,6 +207,7 @@ def run_drive_processing(limit=50):
                     processed += 1
                 move_file(service, file_id, folder_ids[category])
                 os.remove(path)
+                gc.collect()
             except Exception as e:
                 print(f"❌ Failed: {file['name']} — {e}")
 
@@ -219,7 +222,12 @@ def run_drive_processing(limit=50):
             json.dump(list(processed_files), f)
     except Exception as e:
         print(f"⚠️ Could not write processed files log: {e}")
-    rebuild_faiss()
+
+    if new_knowledge:
+        try:
+            rebuild_faiss()
+        except Exception as e:
+            print(f"⚠️ Could not rebuild FAISS: {e}")
 
 @app.route("/", methods=["GET"])
 def home():
