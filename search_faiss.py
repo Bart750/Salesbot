@@ -114,8 +114,18 @@ def home():
 def health_check():
     return jsonify({"status": "API is live", "message": "Endpoints are active."})
 
+# ✅ Admin Trigger to Clean Drive Automatically
+@app.route("/admin/trigger_cleanup", methods=["GET"])
+def trigger_cleanup():
+    try:
+        with app.test_request_context():
+            response = clean_drive_duplicates()
+        return response
+    except Exception as e:
+        return jsonify({"error": f"Failed to trigger cleanup: {str(e)}"}), 500
+
 # ✅ Scan and Delete Duplicates by Content
-@app.route("/clean_drive_duplicates", methods=["POST"])
+@app.route("/clean_drive_duplicates", methods=["POST", "GET"])
 def clean_drive_duplicates():
     creds = authenticate_drive()
     if not creds:
@@ -292,6 +302,7 @@ def auto_sync_drive(interval_minutes=10):
             try:
                 with app.test_request_context():
                     process_drive()
+                    clean_drive_duplicates()
             except Exception as e:
                 print(f"❌ Auto-sync error: {e}")
             time.sleep(interval_minutes * 60)
