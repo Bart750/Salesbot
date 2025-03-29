@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup
+# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Fixed & Extended)
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -7,6 +7,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 import fitz  # PyMuPDF
+import docx
 import os
 import signal
 import sys
@@ -38,11 +39,15 @@ if os.path.exists(processed_files_path):
 FOLDER_NAMES = {
     "docs": "documents",
     "code": "code_files",
+    "data": "data_files",
+    "slides": "presentations",
     "misc": "miscellaneous"
 }
 
-TEXT_TYPES = [".pdf", ".txt"]
+TEXT_TYPES = [".pdf", ".txt", ".docx"]
 CODE_TYPES = [".py", ".ipynb", ".js", ".json"]
+DATA_TYPES = [".csv", ".xlsx"]
+PRESENTATION_TYPES = [".pptx"]
 
 # ✅ Kill stuck servers
 def kill_existing_processes():
@@ -130,6 +135,10 @@ def categorize_file(name):
         return "docs"
     if ext in CODE_TYPES:
         return "code"
+    if ext in DATA_TYPES:
+        return "data"
+    if ext in PRESENTATION_TYPES:
+        return "slides"
     return "misc"
 
 def extract_text(path, ext):
@@ -142,13 +151,15 @@ def extract_text(path, ext):
         elif ext == ".txt":
             with open(path, "r", encoding="utf-8") as f:
                 return f.read().strip()
+        elif ext == ".docx":
+            doc = docx.Document(path)
+            return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
     except Exception as e:
         print(f"❌ Could not extract from {path}: {e}")
     return ""
 
 # ✅ Main Processor
-
-def run_drive_processing(limit=25):
+def run_drive_processing(limit=50):
     global knowledge_base
     creds = authenticate_drive()
     if not creds:
@@ -223,7 +234,6 @@ def query():
     return jsonify(results)
 
 # ✅ Auto-sync
-
 def auto_sync_drive(interval=5):
     def loop():
         while True:
