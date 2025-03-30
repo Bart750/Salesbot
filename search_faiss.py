@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Optimized for Memory + Iterative Folder Handling)
+# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Optimized for Memory + Iterative Folder Handling + Watchdog)
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -22,6 +22,7 @@ import psutil
 import requests
 import threading
 import traceback
+import logging
 
 app = Flask(__name__)
 
@@ -32,6 +33,8 @@ knowledge_base = {}
 file_hashes = set()
 processed_files_path = "processed_files.json"
 processed_files = set()
+
+logging.basicConfig(filename='salesbot.log', level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 
 if os.path.exists(processed_files_path):
     with open(processed_files_path, "r") as f:
@@ -66,7 +69,7 @@ def authenticate_drive():
             creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
         return creds
     except Exception as e:
-        print(f"Auth failed: {e}")
+        logging.error(f"Auth failed: {e}")
         return None
 
 # ✅ FAISS logic
@@ -106,6 +109,7 @@ def is_duplicate(content, filename):
 
 def log_memory():
     mem = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+    logging.info(f"RAM: {mem:.2f} MB")
     print(f"RAM: {mem:.2f} MB")
 
 def ensure_folder(service, name, parent_id=None):
@@ -132,7 +136,7 @@ def move_file(service, file_id, new_folder_id):
                                removeParents=previous_parents,
                                fields='id, parents').execute()
     except Exception as e:
-        print(f"⚠️ Failed to move file {file_id}: {e}")
+        logging.warning(f"Failed to move file {file_id}: {e}")
 
 def categorize_file(name):
     ext = os.path.splitext(name)[-1].lower()
@@ -160,31 +164,27 @@ def extract_text(path, ext):
             doc = docx.Document(path)
             return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
     except Exception as e:
-        print(f"❌ Could not extract from {path}: {e}")
+        logging.warning(f"Could not extract from {path}: {e}")
     return ""
 
-# ✅ Iterative file collector (no recursion)
+# ✅ Iterative folder traversal
 def get_all_files_iteratively(service, parent_id="root"):
     stack = [parent_id]
     all_files = []
 
     while stack:
-        current_folder = stack.pop()
+        current = stack.pop()
         try:
-            folders = service.files().list(
-                q=f"mimeType='application/vnd.google-apps.folder' and '{current_folder}' in parents",
-                fields="files(id, name)"
-            ).execute().get("files", [])
+            folders = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and '{current}' in parents",
+                                           fields="files(id, name)").execute().get("files", [])
             for folder in folders:
                 stack.append(folder["id"])
 
-            files = service.files().list(
-                q=f"not mimeType contains 'folder' and '{current_folder}' in parents",
-                fields="files(id, name, mimeType, size)"
-            ).execute().get("files", [])
+            files = service.files().list(q=f"not mimeType contains 'folder' and '{current}' in parents",
+                                         fields="files(id, name, mimeType, size)").execute().get("files", [])
             all_files.extend(files)
         except Exception as e:
-            print(f"⚠️ Failed to scan folder {current_folder}: {e}")
+            logging.warning(f"Folder scan failed at {current}: {e}")
 
     return all_files
 
@@ -194,53 +194,43 @@ def run_drive_processing():
     try:
         creds = authenticate_drive()
         if not creds:
-            print("❌ Drive auth failed")
             return
 
-        print("📁 Sorting SalesBOT Drive now...")
         service = build("drive", "v3", credentials=creds)
         folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
 
         files = get_all_files_iteratively(service)
+        total = len(files)
+        logging.info(f"Found {total} files.")
         new_knowledge = {}
-        total_files = len(files)
-        print(f"📦 {total_files} files found.")
 
         for i, file in enumerate(files):
             try:
                 file_id, name = file["id"], file["name"]
-                ext = os.path.splitext(name)[-1].lower()
-                print(f"▶️ [{i+1}/{total_files}] Processing file: {name}")
-
+                print(f"▶️ [{i+1}/{total}] Processing: {name}")
                 request = service.files().get_media(fileId=file_id)
                 path = os.path.join(tempfile.gettempdir(), name)
+
                 with open(path, "wb") as f:
                     downloader = MediaIoBaseDownload(f, request, chunksize=512*1024)
-                    done = False
-                    counter = 0
+                    done, counter = False, 0
                     while not done and counter < 20:
                         _, done = downloader.next_chunk()
                         counter += 1
-                    if not done:
-                        print(f"⚠️ Timeout while downloading {name}")
-                        continue
 
-                text = extract_text(path, ext)
+                text = extract_text(path, os.path.splitext(name)[-1].lower())
                 category = categorize_file(name)
                 if text and not is_duplicate(text, name):
                     if category == "docs":
                         new_knowledge[name] = text
-
                 move_file(service, file_id, folder_ids[category])
                 os.remove(path)
                 del text, path
                 gc.collect()
                 log_memory()
-                print(f"✅ Done with {name}")
                 time.sleep(0.5)
-
             except Exception as e:
-                print(f"❌ Error with {file.get('name')}: {e}")
+                logging.error(f"Failed to process {file.get('name')}: {e}")
                 traceback.print_exc()
 
         knowledge_base.update(new_knowledge)
@@ -249,13 +239,9 @@ def run_drive_processing():
             json.dump(list(processed_files), f)
 
         if new_knowledge:
-            try:
-                rebuild_faiss()
-            except Exception as e:
-                print(f"⚠️ Could not rebuild FAISS: {e}")
-
+            rebuild_faiss()
     except Exception as top:
-        print("🔥 TOP-LEVEL CRASH 🔥")
+        logging.critical("TOP LEVEL CRASH")
         traceback.print_exc()
 
 @app.route("/", methods=["GET"])
@@ -294,6 +280,18 @@ def query():
         results.append({"source": keys[idx], "insight": knowledge_base[keys[idx]][:500] + "..."})
     return jsonify(results)
 
+# ✅ Background sync every 10 min
+def auto_sync_drive(interval=10):
+    def loop():
+        while True:
+            try:
+                with app.test_request_context():
+                    run_drive_processing()
+            except Exception as e:
+                logging.warning(f"Auto-sync error: {e}")
+            time.sleep(interval * 60)
+    threading.Thread(target=loop, daemon=True).start()
+
 signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
 signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
 
@@ -303,6 +301,6 @@ if __name__ == "__main__":
     kill_existing_processes()
     load_faiss()
     load_knowledge_base()
-    run_drive_processing()  # 🚨 Auto-sort immediately on startup
+    auto_sync_drive()
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
