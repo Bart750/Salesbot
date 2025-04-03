@@ -52,6 +52,8 @@ CODE_TYPES = [".py", ".ipynb", ".js", ".json"]
 DATA_TYPES = [".csv", ".xlsx"]
 PRESENTATION_TYPES = [".pptx"]
 
+BATCH_SIZE = 25
+
 # ✅ Kill stuck servers
 def kill_existing_processes():
     subprocess.run(["pkill", "-f", "gunicorn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -183,7 +185,7 @@ def get_all_files_iteratively(service, parent_id="root"):
             print(f"⚠️ Folder scan error: {e}")
     return all_files
 
-# ✅ Main Processor (Async-safe)
+# ✅ Main Processor (Batch-safe on boot)
 def run_drive_processing():
     global knowledge_base, processing_status
     processing_status["running"] = True
@@ -198,15 +200,18 @@ def run_drive_processing():
         service = build("drive", "v3", credentials=creds)
         folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
         files = get_all_files_iteratively(service)
-        new_knowledge = {}
-        total = len(files)
-        print(f"📦 {total} files found.")
 
-        for i, file in enumerate(files):
+        files_to_process = [f for f in files if f["name"] not in processed_files]
+        new_knowledge = {}
+        total = len(files_to_process)
+
+        print(f"📦 {total} unprocessed files found. Processing first {BATCH_SIZE}...")
+
+        for i, file in enumerate(files_to_process[:BATCH_SIZE]):
             try:
                 file_id, name = file["id"], file["name"]
                 ext = os.path.splitext(name)[-1].lower()
-                print(f"▶️ [{i+1}/{total}] {name}")
+                print(f"▶️ [{i+1}/{BATCH_SIZE}] {name}")
                 request = service.files().get_media(fileId=file_id)
                 path = os.path.join(tempfile.gettempdir(), name)
                 with open(path, "wb") as f:
@@ -298,5 +303,6 @@ if __name__ == "__main__":
     kill_existing_processes()
     load_faiss()
     load_knowledge_base()
+    run_drive_processing()  # Auto-sort on startup (batch safe)
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
