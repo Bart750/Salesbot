@@ -327,6 +327,6 @@ if __name__ == "__main__":
     kill_existing_processes()
     load_faiss()
     load_knowledge_base()
-    run_drive_processing()
+    run_drive_processing()  # ✅ Run sorting immediately on startup for debug
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
