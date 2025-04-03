@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Auto-sorts All Files on Startup (Async + Memory-Safe)
+# ✅ Ultimate SalesBOT Script – Full Drive Cleanup & Smart Sorter
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -14,7 +14,6 @@ import sys
 import subprocess
 import time
 import json
-import zipfile
 import hashlib
 import tempfile
 import gc
@@ -40,17 +39,27 @@ if os.path.exists(processed_files_path):
         processed_files = set(json.load(f))
 
 FOLDER_NAMES = {
-    "docs": "documents",
-    "code": "code_files",
-    "data": "data_files",
-    "slides": "presentations",
-    "misc": "miscellaneous"
+    "docs": "Word_Documents",
+    "pdf": "PDFs",
+    "code": "Code_Files",
+    "data": "Excel_Files",
+    "slides": "PowerPoints",
+    "misc": "Miscellaneous",
+    "core": "SalesBOT_Core_Files"
 }
 
-TEXT_TYPES = [".pdf", ".txt", ".docx"]
-CODE_TYPES = [".py", ".ipynb", ".js", ".json"]
-DATA_TYPES = [".csv", ".xlsx"]
-PRESENTATION_TYPES = [".pptx"]
+EXTENSION_MAP = {
+    ".pdf": "pdf",
+    ".txt": "docs",
+    ".docx": "docs",
+    ".csv": "data",
+    ".xlsx": "data",
+    ".pptx": "slides",
+    ".py": "code",
+    ".ipynb": "code",
+    ".js": "code",
+    ".json": "code"
+}
 
 BATCH_SIZE = 25
 
@@ -140,15 +149,7 @@ def move_file(service, file_id, new_folder_id):
 
 def categorize_file(name):
     ext = os.path.splitext(name)[-1].lower()
-    if ext in TEXT_TYPES:
-        return "docs"
-    if ext in CODE_TYPES:
-        return "code"
-    if ext in DATA_TYPES:
-        return "data"
-    if ext in PRESENTATION_TYPES:
-        return "slides"
-    return "misc"
+    return EXTENSION_MAP.get(ext, "misc")
 
 def extract_text(path, ext):
     try:
@@ -167,25 +168,28 @@ def extract_text(path, ext):
         print(f"❌ Could not extract from {path}: {e}")
     return ""
 
-# ✅ Iterative folder crawl
+# ✅ Recursive file + folder crawl
 def get_all_files_iteratively(service, parent_id="root"):
     stack = [parent_id]
     all_files = []
+    folders = []
     while stack:
         current = stack.pop()
         try:
-            folders = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and '{current}' in parents",
-                                           fields="files(id, name)").execute().get("files", [])
-            for f in folders:
-                stack.append(f["id"])
+            subfolders = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and '{current}' in parents",
+                                              fields="files(id, name)").execute().get("files", [])
+            for f in subfolders:
+                if f["name"] not in FOLDER_NAMES.values():
+                    folders.append((f["id"], f["name"]))
+                    stack.append(f["id"])
             files = service.files().list(q=f"not mimeType contains 'folder' and '{current}' in parents",
                                          fields="files(id, name, mimeType, size)").execute().get("files", [])
             all_files.extend(files)
         except Exception as e:
             print(f"⚠️ Folder scan error: {e}")
-    return all_files
+    return all_files, folders
 
-# ✅ Main Processor (Batch-safe on boot)
+# ✅ Main Processor (Batch-safe on boot + Cleanup)
 def run_drive_processing():
     global knowledge_base, processing_status
     processing_status["running"] = True
@@ -199,12 +203,11 @@ def run_drive_processing():
 
         service = build("drive", "v3", credentials=creds)
         folder_ids = {k: ensure_folder(service, v) for k, v in FOLDER_NAMES.items()}
-        files = get_all_files_iteratively(service)
+        files, all_folders = get_all_files_iteratively(service)
 
         files_to_process = [f for f in files if f["name"] not in processed_files]
         new_knowledge = {}
         total = len(files_to_process)
-
         print(f"📦 {total} unprocessed files found. Processing first {BATCH_SIZE}...")
 
         for i, file in enumerate(files_to_process[:BATCH_SIZE]):
@@ -239,6 +242,19 @@ def run_drive_processing():
             except Exception as e:
                 print(f"❌ Error with {file.get('name')}: {e}")
                 traceback.print_exc()
+
+        # Delete empty folders (excluding core folders)
+        for folder_id, name in all_folders:
+            if name in FOLDER_NAMES.values():
+                continue
+            res = service.files().list(q=f"'{folder_id}' in parents",
+                                       fields="files(id)").execute().get("files", [])
+            if not res:
+                try:
+                    service.files().delete(fileId=folder_id).execute()
+                    print(f"🗑️ Deleted empty folder: {name}")
+                except Exception as e:
+                    print(f"⚠️ Could not delete folder {name}: {e}")
 
         knowledge_base.update(new_knowledge)
         np.save("ai_metadata.npy", knowledge_base)
@@ -303,6 +319,6 @@ if __name__ == "__main__":
     kill_existing_processes()
     load_faiss()
     load_knowledge_base()
-    run_drive_processing()  # Auto-sort on startup (batch safe)
+    run_drive_processing()
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
