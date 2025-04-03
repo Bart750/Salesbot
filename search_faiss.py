@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Full Drive Cleanup & Smart Sorter (Patched for Accuracy)
+# ✅ Ultimate SalesBOT Script – Full Drive Cleanup & Smart Sorter (No Batch Cap)
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -61,7 +61,7 @@ EXTENSION_MAP = {
     ".json": "code"
 }
 
-BATCH_SIZE = 25
+BATCH_SIZE = None  # No cap, process everything
 
 # ✅ Kill stuck servers
 def kill_existing_processes():
@@ -144,14 +144,11 @@ def move_file(service, file_id, new_folder_id):
                                addParents=new_folder_id,
                                removeParents=previous_parents,
                                fields='id, parents').execute()
-
-        # ✅ Verify move worked
         updated = service.files().get(fileId=file_id, fields="parents").execute()
         if new_folder_id not in updated.get("parents", []):
             print(f"❌ Move failed: {file_id} NOT in expected folder.")
         else:
             print(f"📂 Moved file {file_id} to folder {new_folder_id}")
-
     except Exception as e:
         print(f"⚠️ Failed to move file {file_id}: {e}")
 
@@ -176,7 +173,7 @@ def extract_text(path, ext):
         print(f"❌ Could not extract from {path}: {e}")
     return ""
 
-# ✅ Recursive file + folder crawl
+# ✅ Recursive crawl
 def get_all_files_iteratively(service, parent_id="root"):
     stack = [parent_id]
     all_files = []
@@ -197,7 +194,7 @@ def get_all_files_iteratively(service, parent_id="root"):
             print(f"⚠️ Folder scan error: {e}")
     return all_files, folders
 
-# ✅ Main Processor (Batch-safe on boot + Cleanup)
+# ✅ Main Processor
 def run_drive_processing():
     global knowledge_base, processing_status
     processing_status["running"] = True
@@ -214,15 +211,15 @@ def run_drive_processing():
         files, all_folders = get_all_files_iteratively(service)
 
         files_to_process = [f for f in files if f["name"] not in processed_files]
-        new_knowledge = {}
         total = len(files_to_process)
-        print(f"📦 {total} unprocessed files found. Processing first {BATCH_SIZE}...")
+        print(f"📦 {total} unprocessed files found. Processing all...")
 
-        for i, file in enumerate(files_to_process[:BATCH_SIZE]):
+        new_knowledge = {}
+        for i, file in enumerate(files_to_process):
             try:
                 file_id, name = file["id"], file["name"]
                 ext = os.path.splitext(name)[-1].lower()
-                print(f"▶️ [{i+1}/{BATCH_SIZE}] {name}")
+                print(f"▶️ [{i+1}/{total}] {name}")
                 request = service.files().get_media(fileId=file_id)
                 path = os.path.join(tempfile.gettempdir(), name)
                 with open(path, "wb") as f:
@@ -251,7 +248,6 @@ def run_drive_processing():
                 print(f"❌ Error with {file.get('name')}: {e}")
                 traceback.print_exc()
 
-        # Delete empty folders (excluding core folders)
         for folder_id, name in all_folders:
             if name in FOLDER_NAMES.values():
                 continue
@@ -327,6 +323,6 @@ if __name__ == "__main__":
     kill_existing_processes()
     load_faiss()
     load_knowledge_base()
-    run_drive_processing()  # ✅ Run sorting immediately on startup for debug
+    run_drive_processing()
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
