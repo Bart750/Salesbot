@@ -61,8 +61,6 @@ EXTENSION_MAP = {
     ".json": "code"
 }
 
-BATCH_SIZE = None  # No cap, process everything
-
 # ✅ Kill stuck servers
 def kill_existing_processes():
     subprocess.run(["pkill", "-f", "gunicorn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
