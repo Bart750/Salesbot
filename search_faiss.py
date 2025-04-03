@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Full Drive Cleanup & Smart Sorter
+# ✅ Ultimate SalesBOT Script – Full Drive Cleanup & Smart Sorter (Patched for Accuracy)
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -139,11 +139,19 @@ def ensure_folder(service, name, parent_id=None):
 def move_file(service, file_id, new_folder_id):
     try:
         file = service.files().get(fileId=file_id, fields='parents').execute()
-        previous_parents = ",".join(file.get('parents'))
+        previous_parents = ",".join(file.get('parents', []))
         service.files().update(fileId=file_id,
                                addParents=new_folder_id,
                                removeParents=previous_parents,
                                fields='id, parents').execute()
+
+        # ✅ Verify move worked
+        updated = service.files().get(fileId=file_id, fields="parents").execute()
+        if new_folder_id not in updated.get("parents", []):
+            print(f"❌ Move failed: {file_id} NOT in expected folder.")
+        else:
+            print(f"📂 Moved file {file_id} to folder {new_folder_id}")
+
     except Exception as e:
         print(f"⚠️ Failed to move file {file_id}: {e}")
 
