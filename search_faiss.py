@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Full Drive Cleanup & Smart Sorter (Smart Logging & Dynamic Folders)
+# ✅ Ultimate SalesBOT Script – Drive Cleanup, Smart Sorter, Live Logging & Diagnostics
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -18,9 +18,7 @@ import hashlib
 import tempfile
 import gc
 import psutil
-import requests
 import threading
-import traceback
 from datetime import datetime
 
 app = Flask(__name__)
@@ -35,7 +33,9 @@ processed_files = set()
 processing_status = {
     "running": False,
     "last_run": None,
-    "log": {}
+    "log": {},
+    "stage": "idle",
+    "memory": 0
 }
 
 if os.path.exists(processed_files_path):
@@ -57,13 +57,12 @@ EXTENSION_MAP = {
 
 BASE_FOLDERS = set(["Word_Documents", "PDFs", "Excel_Files", "PowerPoints", "Code_Files", "Miscellaneous", "SalesBOT_Core_Files"])
 
-# ✅ Kill stuck servers
+# Kill stuck servers
 def kill_existing_processes():
     subprocess.run(["pkill", "-f", "gunicorn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["pkill", "-f", "waitress"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
 
-# ✅ Google Drive auth
 def authenticate_drive():
     try:
         json_data = os.getenv("SERVICE_ACCOUNT_JSON")
@@ -73,10 +72,28 @@ def authenticate_drive():
             creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
         return creds
     except Exception as e:
-        print(f"Auth failed: {e}")
+        processing_status["stage"] = f"Auth error: {e}"
         return None
 
-# ✅ FAISS logic
+def extract_text(path, ext):
+    if ext == ".pdf":
+        return " ".join([page.get_text() for page in fitz.open(path)])
+    elif ext == ".docx":
+        return " ".join([p.text for p in docx.Document(path).paragraphs])
+    elif ext == ".txt":
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    return ""
+
+def is_duplicate(content, filename):
+    h = hashlib.md5(content.encode("utf-8")).hexdigest()
+    return h in file_hashes or filename in processed_files
+
+def log_memory():
+    mem = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+    processing_status['memory'] = round(mem, 2)
+    return mem
+
 def rebuild_faiss():
     global index
     if not knowledge_base:
@@ -86,34 +103,6 @@ def rebuild_faiss():
     index.add(np.array(embeddings))
     faiss.write_index(index, "ai_search_index.faiss")
     gc.collect()
-
-def load_faiss():
-    global index
-    try:
-        index = faiss.read_index("ai_search_index.faiss")
-        index.nprobe = 1
-    except:
-        index = None
-
-def load_knowledge_base():
-    global knowledge_base
-    try:
-        knowledge_base = dict(np.load("ai_metadata.npy", allow_pickle=True).item())
-    except:
-        knowledge_base = {}
-
-# ✅ Utils
-def is_duplicate(content, filename):
-    h = hashlib.md5(content.encode("utf-8")).hexdigest()
-    if h in file_hashes or filename in processed_files:
-        return True
-    file_hashes.add(h)
-    processed_files.add(filename)
-    return False
-
-def log_memory():
-    mem = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-    print(f"RAM: {mem:.2f} MB")
 
 def ensure_folder(service, name):
     results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{name}'",
@@ -131,17 +120,19 @@ def move_file(service, file_id, new_folder_id, move_log):
         previous_parents = ",".join(file.get('parents', []))
         service.files().update(fileId=file_id, addParents=new_folder_id, removeParents=previous_parents, fields='id, parents').execute()
         move_log.append(file_id)
+        return True
     except Exception as e:
-        print(f"⚠️ Failed to move file {file_id}: {e}")
+        processing_status['log'].setdefault("move_errors", []).append({"file_id": file_id, "error": str(e)})
+        return False
 
-# ✅ Recursive crawler
 def get_all_files_iteratively(service):
     stack = ["root"]
     all_files, folders = [], []
     while stack:
         current = stack.pop()
         try:
-            subs = service.files().list(q=f"'{current}' in parents", fields="files(id, name, mimeType)").execute().get("files", [])
+            subs = service.files().list(q=f"'{current}' in parents",
+                                        fields="files(id, name, mimeType, size)").execute().get("files", [])
             for item in subs:
                 if item['mimeType'] == 'application/vnd.google-apps.folder' and item['name'] not in BASE_FOLDERS:
                     folders.append((item['id'], item['name']))
@@ -149,23 +140,22 @@ def get_all_files_iteratively(service):
                 elif 'folder' not in item['mimeType']:
                     all_files.append(item)
         except Exception as e:
-            print(f"Folder scan fail: {e}")
+            processing_status['log'].setdefault("folder_scan_errors", []).append(str(e))
     return all_files, folders
 
-# ✅ Main Processor
 def run_drive_processing():
-    global knowledge_base, processing_status
-    start = datetime.utcnow().isoformat()
-    processing_status.update({"running": True, "last_run": start, "log": {}})
+    global knowledge_base, index
+    processing_status.update({"running": True, "stage": "Starting cleanup", "log": {}})
     move_log, error_log = {}, []
 
     try:
         creds = authenticate_drive()
         if not creds:
-            processing_status["log"] = {"error": "Drive auth failed"}
+            processing_status["stage"] = "Drive authentication failed"
             return
 
         service = build("drive", "v3", credentials=creds)
+        processing_status["stage"] = "Scanning files"
         files, folders = get_all_files_iteratively(service)
 
         ext_counter = {}
@@ -173,17 +163,19 @@ def run_drive_processing():
             ext = os.path.splitext(f['name'])[-1].lower()
             ext_counter[ext] = ext_counter.get(ext, 0) + 1
 
-        folder_ids = {}
-        for ext, count in ext_counter.items():
-            folder_name = EXTENSION_MAP.get(ext, "Miscellaneous") if count >= 10 else "Miscellaneous"
-            if folder_name not in folder_ids:
-                folder_ids[folder_name] = ensure_folder(service, folder_name)
+        folder_ids = {name: ensure_folder(service, name) for name in BASE_FOLDERS}
 
         new_knowledge = {}
         for file in files:
             try:
                 name, file_id = file['name'], file['id']
                 ext = os.path.splitext(name)[-1].lower()
+                size = int(file.get("size", 0))
+
+                if size > 50 * 1024 * 1024:
+                    error_log.append({"file": name, "reason": "File too large"})
+                    continue
+
                 request = service.files().get_media(fileId=file_id)
                 path = os.path.join(tempfile.gettempdir(), name)
                 with open(path, "wb") as f:
@@ -192,20 +184,24 @@ def run_drive_processing():
                     while not done and retries < 20:
                         _, done = downloader.next_chunk()
                         retries += 1
-                if not done:
-                    error_log.append({"file": name, "reason": "Timeout"})
-                    continue
+
                 text = extract_text(path, ext)
+                os.remove(path)
+
                 category = EXTENSION_MAP.get(ext, "Miscellaneous") if ext_counter.get(ext, 0) >= 10 else "Miscellaneous"
+
                 if text and not is_duplicate(text, name):
                     if category == "Word_Documents":
                         new_knowledge[name] = text
+                        file_hashes.add(hashlib.md5(text.encode("utf-8")).hexdigest())
+                        processed_files.add(name)
+
                 move_file(service, file_id, folder_ids[category], move_log.setdefault(category, []))
-                os.remove(path)
                 log_memory()
             except Exception as e:
                 error_log.append({"file": file.get('name'), "reason": str(e)})
 
+        processing_status["stage"] = "Cleaning folders"
         for fid, name in folders:
             if name in BASE_FOLDERS:
                 continue
@@ -225,10 +221,12 @@ def run_drive_processing():
 
     except Exception as e:
         error_log.append({"fatal": str(e)})
+        processing_status["stage"] = f"Fatal error: {e}"
     finally:
         processing_status.update({
             "running": False,
             "last_run": datetime.utcnow().isoformat(),
+            "stage": "idle",
             "log": {
                 "moved": move_log,
                 "errors": error_log,
@@ -244,8 +242,7 @@ def home():
 
 @app.route("/mem", methods=["GET"])
 def memory_status():
-    mem = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-    return jsonify({"memory_MB": mem})
+    return jsonify({"memory_MB": processing_status.get("memory", 0)})
 
 @app.route("/status", methods=["GET"])
 def status():
@@ -261,12 +258,14 @@ def query():
     question = request.args.get("question")
     if not question:
         return jsonify({"error": "No question provided."}), 400
-    if index is None:
-        load_faiss()
-    if not knowledge_base:
-        load_knowledge_base()
-    if index is None:
-        return jsonify({"error": "No FAISS index"}), 500
+    try:
+        global index
+        if index is None:
+            index = faiss.read_index("ai_search_index.faiss")
+        if not knowledge_base:
+            knowledge_base.update(dict(np.load("ai_metadata.npy", allow_pickle=True).item()))
+    except:
+        return jsonify({"error": "Search system not ready."}), 500
 
     query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
     D, I = index.search(query_embedding, 3)
@@ -278,15 +277,10 @@ def query():
         results.append({"source": keys[idx], "insight": knowledge_base[keys[idx]][:500] + "..."})
     return jsonify(results)
 
-signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
-signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
-
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    print(f"🚀 Starting SalesBOT on port {port}")
+    print(f"\n\n🚀 Booting SalesBOT + Cleanup on port {port}\n")
     kill_existing_processes()
-    load_faiss()
-    load_knowledge_base()
-    run_drive_processing()
+    threading.Thread(target=run_drive_processing, daemon=True).start()
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
