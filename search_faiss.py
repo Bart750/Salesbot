@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Streamlined Drive Sorter with Reliable Boot Execution
+# ✅ Ultimate SalesBOT Script – Patched Boot-Safe Sorting (Gunicorn-Compatible)
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -229,8 +229,7 @@ def run_drive_processing():
             }
         })
 
-@app.before_first_request
-def start_drive_sort_once():
+def launch_drive_sort():
     if not processing_status.get("boot_triggered"):
         processing_status["boot_triggered"] = True
         threading.Thread(target=run_drive_processing, daemon=True).start()
@@ -277,4 +276,6 @@ if __name__ == "__main__":
     print(f"\n\n🚀 Booting SalesBOT + Cleanup on port {port}\n")
     kill_existing_processes()
     from waitress import serve
+    with app.app_context():
+        launch_drive_sort()
     serve(app, host="0.0.0.0", port=port)
