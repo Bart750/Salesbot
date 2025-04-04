@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Drive Cleanup, Smart Sorter, Live Logging & Diagnostics (Final Fixes)
+# ✅ Ultimate SalesBOT Script – Streamlined Drive Sorter with Reliable Boot Execution
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -35,7 +35,8 @@ processing_status = {
     "last_run": None,
     "log": {},
     "stage": "idle",
-    "memory": 0
+    "memory": 0,
+    "boot_triggered": False
 }
 
 if os.path.exists(processed_files_path):
@@ -146,11 +147,10 @@ def run_drive_processing():
     global knowledge_base, index
     processing_status.update({"running": True, "stage": "Starting cleanup", "log": {}})
     move_log, error_log = {}, []
-
     try:
         creds = authenticate_drive()
         if not creds:
-            processing_status["stage"] = "Drive authentication failed"
+            processing_status.update({"running": False, "stage": "Drive authentication failed"})
             return
 
         service = build("drive", "v3", credentials=creds)
@@ -170,11 +170,9 @@ def run_drive_processing():
                 name, file_id = file['name'], file['id']
                 ext = os.path.splitext(name)[-1].lower()
                 size = int(file.get("size", 0))
-
                 if size > 50 * 1024 * 1024:
                     error_log.append({"file": name, "reason": "File too large"})
                     continue
-
                 request = service.files().get_media(fileId=file_id)
                 path = os.path.join(tempfile.gettempdir(), name)
                 with open(path, "wb") as f:
@@ -183,18 +181,14 @@ def run_drive_processing():
                     while not done and retries < 20:
                         _, done = downloader.next_chunk()
                         retries += 1
-
                 text = extract_text(path, ext)
                 os.remove(path)
-
                 category = EXTENSION_MAP.get(ext, "Miscellaneous") if ext_counter.get(ext, 0) >= 10 else "Miscellaneous"
-
                 if text and not is_duplicate(text, name):
                     if category == "Word_Documents":
                         new_knowledge[name] = text
                         file_hashes.add(hashlib.md5(text.encode("utf-8")).hexdigest())
                         processed_files.add(name)
-
                 move_file(service, file_id, folder_ids[category], move_log.setdefault(category, []))
                 log_memory()
             except Exception as e:
@@ -235,6 +229,12 @@ def run_drive_processing():
             }
         })
 
+@app.before_first_request
+def start_drive_sort_once():
+    if not processing_status.get("boot_triggered"):
+        processing_status["boot_triggered"] = True
+        threading.Thread(target=run_drive_processing, daemon=True).start()
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "SalesBOT is live", "sorted": len(knowledge_base)})
@@ -259,7 +259,6 @@ def query():
         return jsonify({"error": "No question provided."}), 400
     if index is None or not knowledge_base:
         return jsonify({"error": "Search system not ready. Try again shortly."}), 503
-
     try:
         query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
         D, I = index.search(query_embedding, 3)
@@ -277,6 +276,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     print(f"\n\n🚀 Booting SalesBOT + Cleanup on port {port}\n")
     kill_existing_processes()
-    threading.Thread(target=run_drive_processing, daemon=True).start()
     from waitress import serve
     serve(app, host="0.0.0.0", port=port)
