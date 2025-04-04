@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Drive Cleanup, Smart Sorter, Live Logging & Diagnostics
+# ✅ Ultimate SalesBOT Script – Drive Cleanup, Smart Sorter, Live Logging & Diagnostics (Final Fixes)
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -57,7 +57,6 @@ EXTENSION_MAP = {
 
 BASE_FOLDERS = set(["Word_Documents", "PDFs", "Excel_Files", "PowerPoints", "Code_Files", "Miscellaneous", "SalesBOT_Core_Files"])
 
-# Kill stuck servers
 def kill_existing_processes():
     subprocess.run(["pkill", "-f", "gunicorn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["pkill", "-f", "waitress"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -258,24 +257,21 @@ def query():
     question = request.args.get("question")
     if not question:
         return jsonify({"error": "No question provided."}), 400
-    try:
-        global index
-        if index is None:
-            index = faiss.read_index("ai_search_index.faiss")
-        if not knowledge_base:
-            knowledge_base.update(dict(np.load("ai_metadata.npy", allow_pickle=True).item()))
-    except:
-        return jsonify({"error": "Search system not ready."}), 500
+    if index is None or not knowledge_base:
+        return jsonify({"error": "Search system not ready. Try again shortly."}), 503
 
-    query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
-    D, I = index.search(query_embedding, 3)
-    keys = list(knowledge_base.keys())
-    results = []
-    for idx in I[0]:
-        if idx == -1 or idx >= len(keys):
-            continue
-        results.append({"source": keys[idx], "insight": knowledge_base[keys[idx]][:500] + "..."})
-    return jsonify(results)
+    try:
+        query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
+        D, I = index.search(query_embedding, 3)
+        keys = list(knowledge_base.keys())
+        results = []
+        for idx in I[0]:
+            if idx == -1 or idx >= len(keys):
+                continue
+            results.append({"source": keys[idx], "insight": knowledge_base[keys[idx]][:500] + "..."})
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": f"Query failed: {str(e)}"}), 500
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
