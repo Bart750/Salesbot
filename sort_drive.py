@@ -120,9 +120,7 @@ def run_drive_processing():
         for file in files:
             try:
                 name, file_id = file['name'], file['id']
-                ext = os.path.splitext(name)[-1].lower()
-                if not ext:
-                    ext = ".unknown"
+                ext = os.path.splitext(name)[-1].lower() or ".unknown"
                 size = int(file.get("size", 0))
 
                 if size > 50 * 1024 * 1024:
