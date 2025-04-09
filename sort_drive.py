@@ -1,4 +1,4 @@
-# ✅ sort_drive.py – Extracted Drive Sorting Logic
+# ✅ sort_drive.py – Enhanced Drive Sorting Logic
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -114,8 +114,11 @@ def run_drive_processing():
                         retries += 1
                 text = extract_text(path, ext)
                 os.remove(path)
+                if not text or len(text.strip()) < 10:
+                    error_log.append({"file": name, "reason": "Empty or unreadable content"})
+                    continue
                 category = EXTENSION_MAP.get(ext, "Miscellaneous") if ext_counter.get(ext, 0) >= 10 else "Miscellaneous"
-                if text and not is_duplicate(text, name):
+                if not is_duplicate(text, name):
                     if category == "Word_Documents":
                         new_knowledge[name] = text
                         file_hashes.add(hashlib.md5(text.encode("utf-8")).hexdigest())
