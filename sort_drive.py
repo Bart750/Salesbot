@@ -1,4 +1,4 @@
-# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Quarantine
+# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Quarantine + Scoped Folder Access
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -16,6 +16,9 @@ from shared import (
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
+# 🔑 Optional: Limit processing to a specific parent folder
+SALESBOT_FOLDER_NAME = "SalesBOT"
+
 def authenticate_drive():
     try:
         json_data = os.getenv("SERVICE_ACCOUNT_JSON")
@@ -27,6 +30,12 @@ def authenticate_drive():
     except Exception as e:
         processing_status["stage"] = f"Auth error: {e}"
         return None
+
+def find_folder_id(service, folder_name):
+    results = service.files().list(q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'",
+                                   fields="files(id, name)").execute()
+    folders = results.get("files", [])
+    return folders[0]['id'] if folders else None
 
 def ensure_folder(service, name):
     results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{name}'",
@@ -49,8 +58,8 @@ def move_file(service, file_id, new_folder_id, move_log):
         processing_status['log'].setdefault("move_errors", []).append({"file_id": file_id, "error": str(e)})
         return False
 
-def get_all_files_iteratively(service):
-    stack = ["root"]
+def get_all_files_iteratively(service, root_folder_id):
+    stack = [root_folder_id]
     all_files, folders = [], []
     while stack:
         current = stack.pop()
@@ -79,8 +88,13 @@ def run_drive_processing():
             return
 
         service = build("drive", "v3", credentials=creds)
+        root_id = find_folder_id(service, SALESBOT_FOLDER_NAME)
+        if not root_id:
+            processing_status.update({"running": False, "stage": "SalesBOT folder not found"})
+            return
+
         processing_status["stage"] = "Scanning files"
-        files, folders = get_all_files_iteratively(service)
+        files, folders = get_all_files_iteratively(service, root_id)
 
         ext_counter = {}
         for f in files:
