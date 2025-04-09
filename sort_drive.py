@@ -1,4 +1,4 @@
-# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Quarantine + Scoped Folder Access
+# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Quarantine + Scoped Folder Access (with deep recursive fix)
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -59,19 +59,33 @@ def move_file(service, file_id, new_folder_id, move_log):
 def get_all_files_iteratively(service, root_folder_id):
     stack = [root_folder_id]
     all_files, folders = [], []
+
     while stack:
         current = stack.pop()
-        try:
-            subs = service.files().list(q=f"'{current}' in parents",
-                                        fields="files(id, name, mimeType, size)").execute().get("files", [])
-            for item in subs:
-                if item['mimeType'] == 'application/vnd.google-apps.folder' and item['name'] not in BASE_FOLDERS:
-                    folders.append((item['id'], item['name']))
-                    stack.append(item['id'])
-                elif 'folder' not in item['mimeType']:
-                    all_files.append(item)
-        except Exception as e:
-            processing_status['log'].setdefault("folder_scan_errors", []).append(str(e))
+        page_token = None
+        while True:
+            try:
+                response = service.files().list(
+                    q=f"'{current}' in parents and trashed = false",
+                    fields="nextPageToken, files(id, name, mimeType, size)",
+                    pageToken=page_token
+                ).execute()
+
+                for item in response.get("files", []):
+                    if item["mimeType"] == "application/vnd.google-apps.folder":
+                        folders.append((item["id"], item["name"]))
+                        stack.append(item["id"])
+                    else:
+                        all_files.append(item)
+
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+            except Exception as e:
+                processing_status["log"].setdefault("folder_scan_errors", []).append({"folder_id": current, "error": str(e)})
+                break
+
+    processing_status["log"]["folders_found"] = [f[1] for f in folders]
     return all_files, folders
 
 def run_drive_processing():
