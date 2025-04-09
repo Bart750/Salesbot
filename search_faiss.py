@@ -1,12 +1,13 @@
-# ✅ Ultimate SalesBOT Script – Boot-Safe + Integrated Sort Trigger (search_faiss.py)
+# ✅ Ultimate SalesBOT Script – Boot-Safe + Drive Integrated (search_faiss.py)
 from flask import Flask, request, jsonify
 import threading
 import os
-import signal
 import subprocess
 import time
 from waitress import serve
 from datetime import datetime
+
+# ✅ Shared runtime state + drive logic
 from shared import model, index, knowledge_base, rebuild_faiss, log_memory, processed_files, processing_status
 from sort_drive import run_drive_processing
 import numpy as np
@@ -25,20 +26,26 @@ def launch_drive_sort():
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "SalesBOT is live", "sorted": len(knowledge_base)})
-
-@app.route("/mem", methods=["GET"])
-def memory_status():
-    return jsonify({"memory_MB": log_memory()})
+    return jsonify({
+        "status": "SalesBOT is live",
+        "sorted_files": len(knowledge_base),
+        "memory_MB": log_memory()
+    })
 
 @app.route("/status", methods=["GET"])
 def status():
     return jsonify(processing_status)
 
+@app.route("/mem", methods=["GET"])
+def memory_status():
+    return jsonify({"memory_MB": log_memory()})
+
 @app.route("/process_drive", methods=["POST"])
 def process_drive():
+    if processing_status["running"]:
+        return jsonify({"message": "Drive processing is already running."}), 429
     threading.Thread(target=run_drive_processing, daemon=True).start()
-    return jsonify({"message": "Drive processing started in background."}), 202
+    return jsonify({"message": "Drive processing started."}), 202
 
 @app.route("/query")
 def query():
@@ -55,7 +62,10 @@ def query():
         for idx in I[0]:
             if idx == -1 or idx >= len(keys):
                 continue
-            results.append({"source": keys[idx], "insight": knowledge_base[keys[idx]][:500] + "..."})
+            results.append({
+                "source": keys[idx],
+                "insight": knowledge_base[keys[idx]][:500] + "..."
+            })
         return jsonify(results)
     except Exception as e:
         return jsonify({"error": f"Query failed: {str(e)}"}), 500
