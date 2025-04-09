@@ -20,3 +20,6 @@ oauth2client
 tqdm
 filetype
 waitress==2.1.2
+protobuf==4.25.3  # Avoids incompat issues with newer google packages
+setuptools>=65.0.0
+
