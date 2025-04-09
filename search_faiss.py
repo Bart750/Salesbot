@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Patched Boot-Safe (Sorting removed)
+# ✅ Ultimate SalesBOT Script – Boot-Safe + Integrated Sort Trigger
 from flask import Flask, request, jsonify
 import faiss
 import numpy as np
@@ -17,6 +17,7 @@ import gc
 import psutil
 import threading
 from datetime import datetime
+from sort_drive import run_drive_processing, processing_status
 
 app = Flask(__name__)
 
@@ -27,14 +28,6 @@ knowledge_base = {}
 file_hashes = set()
 processed_files_path = "processed_files.json"
 processed_files = set()
-processing_status = {
-    "running": False,
-    "last_run": None,
-    "log": {},
-    "stage": "idle",
-    "memory": 0,
-    "boot_triggered": False
-}
 
 if os.path.exists(processed_files_path):
     with open(processed_files_path, "r") as f:
@@ -50,10 +43,13 @@ EXTENSION_MAP = {
     ".py": "Code_Files",
     ".ipynb": "Code_Files",
     ".js": "Code_Files",
-    ".json": "Code_Files"
+    ".json": "Code_Files",
+    ".zip": "System_Files",
+    ".exe": "System_Files",
+    ".dmg": "System_Files"
 }
 
-BASE_FOLDERS = set(["Word_Documents", "PDFs", "Excel_Files", "PowerPoints", "Code_Files", "Miscellaneous", "SalesBOT_Core_Files"])
+BASE_FOLDERS = set(["Word_Documents", "PDFs", "Excel_Files", "PowerPoints", "Code_Files", "Miscellaneous", "SalesBOT_Core_Files", "System_Files"])
 
 def kill_existing_processes():
     subprocess.run(["pkill", "-f", "gunicorn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -89,6 +85,11 @@ def log_memory():
     processing_status['memory'] = round(mem, 2)
     return mem
 
+def launch_drive_sort():
+    if not processing_status.get("boot_triggered"):
+        processing_status["boot_triggered"] = True
+        threading.Thread(target=run_drive_processing, daemon=True).start()
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "SalesBOT is live", "sorted": len(knowledge_base)})
@@ -103,7 +104,8 @@ def status():
 
 @app.route("/process_drive", methods=["POST"])
 def process_drive():
-    return jsonify({"message": "Drive processing is not handled in this script."}), 501
+    threading.Thread(target=run_drive_processing, daemon=True).start()
+    return jsonify({"message": "Drive processing started in background."}), 202
 
 @app.route("/query")
 def query():
@@ -130,4 +132,6 @@ if __name__ == "__main__":
     print(f"\n\n🚀 Booting SalesBOT on port {port}\n")
     kill_existing_processes()
     from waitress import serve
+    with app.app_context():
+        launch_drive_sort()
     serve(app, host="0.0.0.0", port=port)
