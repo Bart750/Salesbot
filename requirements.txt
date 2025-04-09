@@ -19,4 +19,4 @@ gspread
 oauth2client
 tqdm
 filetype
-
+waitress==2.1.2
