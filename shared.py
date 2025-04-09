@@ -69,3 +69,11 @@ def is_duplicate(content, filename):
 def log_memory():
     mem = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
     return round(mem, 2)
+processing_status = {
+    "running": False,
+    "last_run": None,
+    "log": {},
+    "stage": "idle",
+    "memory": 0,
+    "boot_triggered": False
+}
