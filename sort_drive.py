@@ -1,4 +1,4 @@
-# ✅ sort_drive.py – Enhanced Drive Sorting Logic (Final Copy)
+# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Quarantine
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -88,6 +88,7 @@ def run_drive_processing():
             ext_counter[ext] = ext_counter.get(ext, 0) + 1
 
         folder_ids = {name: ensure_folder(service, name) for name in BASE_FOLDERS}
+        quarantine_id = folder_ids.get("Quarantine", ensure_folder(service, "Quarantine"))
 
         new_knowledge = {}
         for file in files:
@@ -95,9 +96,12 @@ def run_drive_processing():
                 name, file_id = file['name'], file['id']
                 ext = os.path.splitext(name)[-1].lower()
                 size = int(file.get("size", 0))
+
                 if size > 50 * 1024 * 1024:
+                    move_file(service, file_id, quarantine_id, move_log.setdefault("Quarantine", []))
                     error_log.append({"file": name, "reason": "File too large"})
                     continue
+
                 request = service.files().get_media(fileId=file_id)
                 path = os.path.join(tempfile.gettempdir(), name)
                 with open(path, "wb") as f:
@@ -106,14 +110,17 @@ def run_drive_processing():
                     while not done and retries < 20:
                         _, done = downloader.next_chunk()
                         retries += 1
+
                 text = extract_text(path, ext)
                 os.remove(path)
 
                 if not text or len(text.strip()) < 10:
+                    move_file(service, file_id, quarantine_id, move_log.setdefault("Quarantine", []))
                     error_log.append({"file": name, "reason": "Empty or unreadable content"})
                     continue
 
                 category = EXTENSION_MAP.get(ext, "Miscellaneous") if ext_counter.get(ext, 0) >= 10 else "Miscellaneous"
+
                 if not is_duplicate(text, name):
                     if category == "Word_Documents":
                         new_knowledge[name] = text
@@ -122,7 +129,9 @@ def run_drive_processing():
 
                 move_file(service, file_id, folder_ids[category], move_log.setdefault(category, []))
                 log_memory()
+
             except Exception as e:
+                move_file(service, file['id'], quarantine_id, move_log.setdefault("Quarantine", []))
                 error_log.append({"file": file.get('name'), "reason": str(e)})
 
         processing_status["stage"] = "Cleaning folders"
@@ -140,12 +149,14 @@ def run_drive_processing():
         np.save("ai_metadata.npy", knowledge_base)
         with open(processed_files_path, "w") as f:
             json.dump(list(processed_files), f)
+
         if new_knowledge:
             rebuild_faiss()
 
     except Exception as e:
         error_log.append({"fatal": str(e)})
         processing_status["stage"] = f"Fatal error: {e}"
+
     finally:
         processing_status.update({
             "running": False,
