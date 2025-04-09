@@ -1,4 +1,4 @@
-# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Quarantine + Scoped Folder Access (final patch)
+# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Audit Logging (final patch)
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -30,14 +30,12 @@ def authenticate_drive():
         return None
 
 def find_folder_id(service, folder_name):
-    results = service.files().list(q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'",
-                                   fields="files(id, name)").execute()
+    results = service.files().list(q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'", fields="files(id, name)").execute()
     folders = results.get("files", [])
     return folders[0]['id'] if folders else None
 
 def ensure_folder(service, name):
-    results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{name}'",
-                                   spaces='drive', fields="files(id, name)").execute()
+    results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{name}'", spaces='drive', fields="files(id, name)").execute()
     folders = results.get("files", [])
     if folders:
         return folders[0]['id']
@@ -70,14 +68,12 @@ def get_all_files_iteratively(service, root_folder_id):
                     fields="nextPageToken, files(id, name, mimeType, size)",
                     pageToken=page_token
                 ).execute()
-
                 for item in response.get("files", []):
                     if item["mimeType"] == "application/vnd.google-apps.folder":
                         folders.append((item["id"], item["name"]))
                         stack.append(item["id"])
                     else:
                         all_files.append(item)
-
                 page_token = response.get("nextPageToken")
                 if not page_token:
                     break
@@ -92,6 +88,7 @@ def run_drive_processing():
     global index
     processing_status.update({"running": True, "stage": "Starting cleanup", "log": {}})
     move_log, error_log = {}, []
+    local_duplicate_count = 0
 
     try:
         creds = authenticate_drive()
@@ -107,6 +104,8 @@ def run_drive_processing():
 
         processing_status["stage"] = f"Scanning '{SALESBOT_FOLDER_NAME}'"
         files, folders = get_all_files_iteratively(service, root_id)
+        processing_status["log"]["total_files_found"] = len(files)
+        processing_status["log"]["total_folders_found"] = len(folders)
 
         ext_counter = {}
         for f in files:
@@ -152,6 +151,8 @@ def run_drive_processing():
                         new_knowledge[name] = text
                         file_hashes.add(hashlib.md5(text.encode("utf-8")).hexdigest())
                         processed_files.add(name)
+                else:
+                    local_duplicate_count += 1
 
                 move_file(service, file_id, folder_ids[category], move_log.setdefault(category, []))
                 log_memory()
@@ -193,6 +194,6 @@ def run_drive_processing():
                 "errors": error_log,
                 "count": len(files),
                 "processed": sum(len(v) for v in move_log.values()),
-                "duplicates_skipped": len(processed_files),
+                "duplicates_skipped": local_duplicate_count
             }
         })
