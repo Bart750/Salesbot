@@ -70,6 +70,18 @@ def query():
     except Exception as e:
         return jsonify({"error": f"Query failed: {str(e)}"}), 500
 
+@app.route("/reload_index", methods=["POST"])
+def reload_index():
+    try:
+        rebuild_faiss()
+        return jsonify({"message": "FAISS index rebuilt."}), 200
+    except Exception as e:
+        return jsonify({"error": f"Rebuild failed: {str(e)}"}), 500
+
+@app.route("/last_run_log", methods=["GET"])
+def last_run_log():
+    return jsonify(processing_status.get("log", {}))
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     print(f"\n\n🚀 Booting SalesBOT on port {port}\n")
