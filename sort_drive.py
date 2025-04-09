@@ -1,4 +1,4 @@
-# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Quarantine + Scoped Folder Access (with deep recursive fix)
+# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Quarantine + Scoped Folder Access (final patch)
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -148,7 +148,7 @@ def run_drive_processing():
                 category = EXTENSION_MAP.get(ext, "Miscellaneous") if ext_counter.get(ext, 0) >= 10 else "Miscellaneous"
 
                 if not is_duplicate(text, name):
-                    if category == "Word_Documents":
+                    if category in ["Word_Documents", "PDFs", "Excel_Files", "Miscellaneous"]:
                         new_knowledge[name] = text
                         file_hashes.add(hashlib.md5(text.encode("utf-8")).hexdigest())
                         processed_files.add(name)
