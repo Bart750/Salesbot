@@ -15,8 +15,6 @@ from shared import (
 )
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
-
-# 🔑 Optional: Limit processing to a specific parent folder
 SALESBOT_FOLDER_NAME = "SalesBOT"
 
 def authenticate_drive():
@@ -93,7 +91,7 @@ def run_drive_processing():
             processing_status.update({"running": False, "stage": "SalesBOT folder not found"})
             return
 
-        processing_status["stage"] = "Scanning files"
+        processing_status["stage"] = f"Scanning '{SALESBOT_FOLDER_NAME}'"
         files, folders = get_all_files_iteratively(service, root_id)
 
         ext_counter = {}
@@ -102,13 +100,15 @@ def run_drive_processing():
             ext_counter[ext] = ext_counter.get(ext, 0) + 1
 
         folder_ids = {name: ensure_folder(service, name) for name in BASE_FOLDERS}
-        quarantine_id = folder_ids.get("Quarantine", ensure_folder(service, "Quarantine"))
+        quarantine_id = ensure_folder(service, "Quarantine")
 
         new_knowledge = {}
         for file in files:
             try:
                 name, file_id = file['name'], file['id']
                 ext = os.path.splitext(name)[-1].lower()
+                if not ext:
+                    ext = ".unknown"
                 size = int(file.get("size", 0))
 
                 if size > 50 * 1024 * 1024:
