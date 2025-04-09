@@ -50,9 +50,11 @@ EXTENSION_MAP = {
     ".dmg": "System_Files"
 }
 
+# 🧱 Folder classification baseline
 BASE_FOLDERS = set([
     "Word_Documents", "PDFs", "Excel_Files", "PowerPoints",
-    "Code_Files", "Miscellaneous", "SalesBOT_Core_Files", "System_Files"
+    "Code_Files", "Miscellaneous", "SalesBOT_Core_Files",
+    "System_Files", "Quarantine"  # ← NEW
 ])
 
 # 🔁 FAISS index rebuild
