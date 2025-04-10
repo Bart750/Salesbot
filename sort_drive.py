@@ -78,16 +78,19 @@ def get_all_files_iteratively(service):
 def get_unorganized_files(service):
     try:
         limbo_files = []
-
-        # Primary: unparented and owned
-        q1 = "not trashed and not 'root' in parents and 'me' in owners"
-        r1 = service.files().list(q=q1, fields="files(id, name, mimeType, size, parents)").execute().get("files", [])
-        limbo_files.extend(r1)
-
-        # Fallback: no parent at all
-        q2 = "not trashed and 'me' in owners"
-        r2 = service.files().list(q=q2, fields="files(id, name, mimeType, size, parents)").execute().get("files", [])
-        limbo_files.extend([f for f in r2 if not f.get("parents") and f not in limbo_files])
+        page_token = None
+        while True:
+            response = service.files().list(
+                q="not trashed and 'me' in owners and not 'root' in parents",
+                spaces='drive',
+                corpora='user',
+                fields="nextPageToken, files(id, name, mimeType, size, parents)",
+                pageToken=page_token
+            ).execute()
+            limbo_files.extend(response.get("files", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
 
         processing_status["log"]["limbo_files_detected"] = len(limbo_files)
         return limbo_files
