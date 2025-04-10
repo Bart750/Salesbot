@@ -1,4 +1,4 @@
-# ✅ shared.py – Central Shared State & Utility Functions
+# ✅ shared.py – Central Shared State & Utility Functions (Patched + Stable)
 import faiss
 import numpy as np
 import hashlib
@@ -33,6 +33,13 @@ if os.path.exists(processed_files_path):
     with open(processed_files_path, "r") as f:
         processed_files = set(json.load(f))
 
+# ✅ Load prior metadata if exists
+if os.path.exists("ai_metadata.npy"):
+    try:
+        knowledge_base.update(np.load("ai_metadata.npy", allow_pickle=True).item())
+    except Exception as e:
+        processing_status["stage"] = f"Metadata load failed: {e}"
+
 # 📁 Extension-based file routing
 EXTENSION_MAP = {
     ".pdf": "PDFs",
@@ -47,7 +54,9 @@ EXTENSION_MAP = {
     ".json": "Code_Files",
     ".zip": "System_Files",
     ".exe": "System_Files",
-    ".dmg": "System_Files"
+    ".dmg": "System_Files",
+    ".md": "Word_Documents",
+    ".html": "Word_Documents"
 }
 
 # 📂 Auto-managed folders
@@ -62,14 +71,18 @@ def rebuild_faiss():
     global index
     if not knowledge_base:
         return
-    embeddings = [
-        model.encode([t], convert_to_numpy=True)[0].astype("float32")
-        for t in knowledge_base.values()
-    ]
-    index = faiss.IndexFlatL2(len(embeddings[0]))
-    index.add(np.array(embeddings))
-    faiss.write_index(index, "ai_search_index.faiss")
-    gc.collect()
+    try:
+        embeddings = [
+            model.encode([t], convert_to_numpy=True)[0].astype("float32")
+            for t in knowledge_base.values()
+        ]
+        index = faiss.IndexFlatL2(len(embeddings[0]))
+        index.add(np.array(embeddings))
+        faiss.write_index(index, "ai_search_index.faiss")
+    except Exception as e:
+        processing_status["stage"] = f"FAISS rebuild failed: {e}"
+    finally:
+        gc.collect()
 
 # 📜 Extract readable content from known formats
 def extract_text(path, ext):
@@ -78,7 +91,7 @@ def extract_text(path, ext):
             return " ".join([page.get_text() for page in fitz.open(path)])
         elif ext == ".docx":
             return " ".join([p.text for p in docx.Document(path).paragraphs])
-        elif ext == ".txt":
+        elif ext in [".txt", ".md", ".html"]:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read()
     except Exception:
