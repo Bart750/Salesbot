@@ -44,7 +44,7 @@ def ensure_folder(service, name):
 def move_file(service, file_id, new_folder_id, move_log):
     try:
         file = service.files().get(fileId=file_id, fields='parents').execute()
-        previous_parents = ",".join(file.get('parents', []))
+        previous_parents = ",".join(file.get('parents', [])) if file.get('parents') else ""
         service.files().update(
             fileId=file_id,
             addParents=new_folder_id,
@@ -85,11 +85,11 @@ def get_all_files_iteratively(service):
 
 def get_unorganized_files(service):
     try:
-        files = service.files().list(
+        all_docs = service.files().list(
             q="not trashed and 'me' in owners",
             fields="files(id, name, mimeType, size, parents)"
         ).execute().get("files", [])
-        limbo_files = [f for f in files if not f.get("parents")]
+        limbo_files = [f for f in all_docs if not f.get("parents")]
         processing_status["log"]["limbo_files_detected"] = len(limbo_files)
         return limbo_files
     except Exception as e:
@@ -121,6 +121,8 @@ def run_drive_processing():
         quarantine_id = ensure_folder(service, "Quarantine")
 
         new_knowledge = {}
+        local_duplicate_count = 0
+
         for file in files:
             try:
                 name, file_id = file['name'], file['id']
@@ -156,6 +158,8 @@ def run_drive_processing():
                         new_knowledge[name] = text
                         file_hashes.add(hashlib.md5(text.encode("utf-8")).hexdigest())
                         processed_files.add(name)
+                else:
+                    local_duplicate_count += 1
 
                 move_file(service, file_id, folder_ids[category], move_log.setdefault(category, []))
                 log_memory()
@@ -197,6 +201,6 @@ def run_drive_processing():
                 "errors": error_log,
                 "count": len(files),
                 "processed": sum(len(v) for v in move_log.values()),
-                "duplicates_skipped": len(processed_files)
+                "duplicates_skipped": local_duplicate_count
             }
         })
