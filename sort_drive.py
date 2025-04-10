@@ -2,11 +2,7 @@
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
-import tempfile
-import hashlib
-import os
-import json
-import numpy as np
+import tempfile, hashlib, os, json, numpy as np
 from datetime import datetime
 
 from shared import (
@@ -59,8 +55,7 @@ def move_file(service, file_id, new_folder_id, move_log):
 
 def get_all_files_iteratively(service):
     stack = ["root"]
-    all_files, folders = [], []
-    seen_ids = set()
+    all_files, folders, seen_ids = [], [], set()
     while stack:
         current = stack.pop()
         try:
@@ -69,8 +64,7 @@ def get_all_files_iteratively(service):
                 fields="files(id, name, mimeType, size, parents)"
             ).execute().get("files", [])
             for item in subs:
-                if item['id'] in seen_ids:
-                    continue
+                if item['id'] in seen_ids: continue
                 seen_ids.add(item['id'])
                 if item['mimeType'] == 'application/vnd.google-apps.folder' and item['name'] not in BASE_FOLDERS:
                     folders.append((item['id'], item['name']))
@@ -83,14 +77,21 @@ def get_all_files_iteratively(service):
 
 def get_unorganized_files(service):
     try:
-        results = service.files().list(
-            q="not trashed",
-            fields="files(id, name, mimeType, size, parents)"
-        ).execute()
-        all_files = results.get("files", [])
-        limbo_files = [f for f in all_files if not f.get("parents")]
+        limbo_files = []
+
+        # Primary: unparented and owned
+        q1 = "not trashed and not 'root' in parents and 'me' in owners"
+        r1 = service.files().list(q=q1, fields="files(id, name, mimeType, size, parents)").execute().get("files", [])
+        limbo_files.extend(r1)
+
+        # Fallback: no parent at all
+        q2 = "not trashed and 'me' in owners"
+        r2 = service.files().list(q=q2, fields="files(id, name, mimeType, size, parents)").execute().get("files", [])
+        limbo_files.extend([f for f in r2 if not f.get("parents") and f not in limbo_files])
+
         processing_status["log"]["limbo_files_detected"] = len(limbo_files)
         return limbo_files
+
     except Exception as e:
         processing_status['log'].setdefault("limbo_errors", []).append(str(e))
         return []
@@ -118,7 +119,6 @@ def run_drive_processing():
 
         folder_ids = {name: ensure_folder(service, name) for name in BASE_FOLDERS}
         quarantine_id = ensure_folder(service, "Quarantine")
-
         new_knowledge = {}
         local_duplicate_count = 0
 
