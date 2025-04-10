@@ -1,4 +1,4 @@
-# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Limbo Recovery + Shared-Compatible
+# ✅ sort_drive.py – Final Patch: Limbo Recovery + Robust Sorting + Empty Folder Cleanup
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -54,9 +54,7 @@ def move_file(service, file_id, new_folder_id, move_log):
         move_log.append(file_id)
         return True
     except Exception as e:
-        processing_status['log'].setdefault("move_errors", []).append({
-            "file_id": file_id, "error": str(e)
-        })
+        processing_status['log'].setdefault("move_errors", []).append({"file_id": file_id, "error": str(e)})
         return False
 
 def get_all_files_iteratively(service):
