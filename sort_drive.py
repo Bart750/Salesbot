@@ -1,4 +1,4 @@
-# ✅ sort_drive.py – Final Patch: Limbo Recovery + Robust Sorting + Empty Folder Cleanup
+# ✅ sort_drive.py – Final Fix: My Drive Root, Limbo Recovery, Full Cleanup
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -27,13 +27,13 @@ def authenticate_drive():
 
 def ensure_folder(service, name):
     results = service.files().list(
-        q=f"mimeType='application/vnd.google-apps.folder' and name='{name}'",
+        q=f"mimeType='application/vnd.google-apps.folder' and name='{name}' and 'root' in parents and trashed = false",
         spaces='drive', fields="files(id, name)"
     ).execute()
     folders = results.get("files", [])
     if folders:
         return folders[0]['id']
-    folder_metadata = {'name': name, 'mimeType': 'application/vnd.google-apps.folder'}
+    folder_metadata = {'name': name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': ['root']}
     folder = service.files().create(body=folder_metadata, fields='id').execute()
     return folder['id']
 
@@ -81,7 +81,7 @@ def get_unorganized_files(service):
         page_token = None
         while True:
             response = service.files().list(
-                q="not trashed and 'me' in owners and not 'root' in parents",
+                q="not trashed and 'me' in owners and (not 'root' in parents or parents = null)",
                 spaces='drive',
                 corpora='user',
                 fields="nextPageToken, files(id, name, mimeType, size, parents)",
@@ -91,10 +91,8 @@ def get_unorganized_files(service):
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
-
         processing_status["log"]["limbo_files_detected"] = len(limbo_files)
         return limbo_files
-
     except Exception as e:
         processing_status['log'].setdefault("limbo_errors", []).append(str(e))
         return []
