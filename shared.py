@@ -1,4 +1,4 @@
-# ✅ shared.py – Central Shared State & Utility Functions (Patched + Stable)
+# ✅ shared.py – Stable Runtime State & Safe Indexing (Patched)
 import faiss
 import numpy as np
 import hashlib
@@ -10,7 +10,7 @@ from sentence_transformers import SentenceTransformer
 import fitz  # PyMuPDF
 import docx
 
-# 🔧 Shared runtime status (used across all modules)
+# 🔧 Runtime status
 processing_status = {
     "running": False,
     "last_run": None,
@@ -20,27 +20,31 @@ processing_status = {
     "boot_triggered": False
 }
 
-# 🧠 Embedding model
+# 🧠 Embedding engine
 model = SentenceTransformer('all-MiniLM-L6-v2')
 index = None
 knowledge_base = {}
 file_hashes = set()
 
-# ✅ Previously processed file memory
+# ✅ Load previous file memory
 processed_files_path = "processed_files.json"
 processed_files = set()
 if os.path.exists(processed_files_path):
     with open(processed_files_path, "r") as f:
         processed_files = set(json.load(f))
 
-# ✅ Load prior metadata if exists
+# ✅ Load prior vector metadata
 if os.path.exists("ai_metadata.npy"):
     try:
-        knowledge_base.update(np.load("ai_metadata.npy", allow_pickle=True).item())
+        kb = np.load("ai_metadata.npy", allow_pickle=True).item()
+        if isinstance(kb, dict):
+            knowledge_base.update(kb)
+        else:
+            processing_status["stage"] = "ai_metadata.npy was not a valid dictionary"
     except Exception as e:
         processing_status["stage"] = f"Metadata load failed: {e}"
 
-# 📁 Extension-based file routing
+# 📁 Extension routing
 EXTENSION_MAP = {
     ".pdf": "PDFs",
     ".txt": "Word_Documents",
@@ -59,32 +63,36 @@ EXTENSION_MAP = {
     ".html": "Word_Documents"
 }
 
-# 📂 Auto-managed folders
+# 📂 Folder categories
 BASE_FOLDERS = set([
     "Word_Documents", "PDFs", "Excel_Files", "PowerPoints",
     "Code_Files", "Miscellaneous", "SalesBOT_Core_Files",
     "System_Files", "Quarantine"
 ])
 
-# 🔁 Rebuild vector search index
+# 🔁 Stable FAISS index rebuild
 def rebuild_faiss():
     global index
-    if not knowledge_base:
-        return
     try:
+        valid_texts = [v for v in knowledge_base.values() if isinstance(v, str) and v.strip()]
+        if not valid_texts:
+            processing_status["stage"] = "FAISS rebuild skipped (no valid text entries)"
+            return
         embeddings = [
             model.encode([t], convert_to_numpy=True)[0].astype("float32")
-            for t in knowledge_base.values()
+            for t in valid_texts
         ]
-        index = faiss.IndexFlatL2(len(embeddings[0]))
+        dim = len(embeddings[0])
+        index = faiss.IndexFlatL2(dim)
         index.add(np.array(embeddings))
         faiss.write_index(index, "ai_search_index.faiss")
+        processing_status["stage"] = f"FAISS rebuilt with {len(embeddings)} entries"
     except Exception as e:
         processing_status["stage"] = f"FAISS rebuild failed: {e}"
     finally:
         gc.collect()
 
-# 📜 Extract readable content from known formats
+# 📜 Extract readable content
 def extract_text(path, ext):
     try:
         if ext == ".pdf":
@@ -98,12 +106,12 @@ def extract_text(path, ext):
         return ""
     return ""
 
-# 🔐 Check for duplication
+# 🔐 Duplication check
 def is_duplicate(content, filename):
     h = hashlib.md5(content.encode("utf-8")).hexdigest()
     return h in file_hashes or filename in processed_files
 
-# 🧠 Capture live memory usage
+# 🧠 Memory logging
 def log_memory():
     mem = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
     processing_status["memory"] = round(mem, 2)
