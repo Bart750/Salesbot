@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Boot-Safe + Drive Integrated (Final Patch)
+# ✅ Ultimate SalesBOT Script – Boot-Safe + Drive Integrated (Enhanced + Observable)
 from flask import Flask, request, jsonify
 import threading
 import os
@@ -46,6 +46,17 @@ def home():
 def status():
     return jsonify(processing_status)
 
+@app.route("/debug", methods=["GET"])
+def debug():
+    return jsonify({
+        "stage": processing_status["stage"],
+        "running": processing_status["running"],
+        "boot_triggered": processing_status["boot_triggered"],
+        "log_entries": len(processing_status.get("log", {})),
+        "indexed_files": len(knowledge_base),
+        "memory_MB": log_memory()
+    })
+
 @app.route("/mem", methods=["GET"])
 def memory_status():
     return jsonify({"memory_MB": log_memory()})
@@ -67,7 +78,11 @@ def query():
     if not question:
         return jsonify({"error": "No question provided."}), 400
     if processing_status["running"] or index is None or not knowledge_base:
-        return jsonify({"error": "System is initializing or processing Drive. Please wait."}), 503
+        return jsonify({
+            "error": "System is initializing or processing Drive. Please wait.",
+            "stage": processing_status["stage"],
+            "last_run": processing_status.get("last_run")
+        }), 503
     try:
         query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
         D, I = index.search(query_embedding, 3)
@@ -86,6 +101,8 @@ def query():
 
 @app.route("/reload_index", methods=["POST"])
 def reload_index():
+    if not knowledge_base:
+        return jsonify({"error": "Knowledge base is empty. Rebuild aborted."}), 400
     try:
         rebuild_faiss()
         return jsonify({"message": "FAISS index rebuilt."}), 200
@@ -95,6 +112,11 @@ def reload_index():
 @app.route("/last_run_log", methods=["GET"])
 def last_run_log():
     return jsonify(processing_status.get("log", {}))
+
+@app.route("/recover_limbo", methods=["POST"])
+def recover_limbo():
+    # 🔧 Hook this up to any file recovery tool you build
+    return jsonify({"message": "Limbo recovery not implemented yet."}), 501
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
