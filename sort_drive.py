@@ -83,11 +83,12 @@ def get_all_files_iteratively(service):
 
 def get_unorganized_files(service):
     try:
-        all_docs = service.files().list(
-            q="not trashed and 'me' in owners",
+        results = service.files().list(
+            q="not trashed",
             fields="files(id, name, mimeType, size, parents)"
-        ).execute().get("files", [])
-        limbo_files = [f for f in all_docs if not f.get("parents")]
+        ).execute()
+        all_files = results.get("files", [])
+        limbo_files = [f for f in all_files if not f.get("parents")]
         processing_status["log"]["limbo_files_detected"] = len(limbo_files)
         return limbo_files
     except Exception as e:
