@@ -1,4 +1,4 @@
-# ✅ Ultimate SalesBOT Script – Boot-Safe + Drive Integrated (Enhanced + Observable)
+# ✅ Ultimate SalesBOT Script – Boot-Safe + Drive Integrated (Enhanced + Observable + Limbo Recovery Ready)
 from flask import Flask, request, jsonify
 import threading
 import os
@@ -12,7 +12,7 @@ from shared import (
     model, index, knowledge_base, rebuild_faiss, log_memory,
     processed_files, processing_status
 )
-from sort_drive import run_drive_processing
+from sort_drive import run_drive_processing, recover_limbo_files
 import numpy as np
 
 app = Flask(__name__)
@@ -115,8 +115,13 @@ def last_run_log():
 
 @app.route("/recover_limbo", methods=["POST"])
 def recover_limbo():
-    # 🔧 Hook this up to any file recovery tool you build
-    return jsonify({"message": "Limbo recovery not implemented yet."}), 501
+    if processing_status["running"]:
+        return jsonify({"message": "Cannot recover while processing."}), 429
+    try:
+        threading.Thread(target=recover_limbo_files, daemon=True).start()
+        return jsonify({"message": "Limbo recovery initiated."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
