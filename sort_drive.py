@@ -1,5 +1,4 @@
-# ✅ sort_drive.py – Enhanced Drive Sorting Logic (Shared-Compatible)
-
+# ✅ sort_drive.py – Enhanced Drive Sorting Logic with Limbo Recovery + Shared-Compatible
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -10,7 +9,6 @@ import json
 import numpy as np
 from datetime import datetime
 
-# ✅ Shared imports
 from shared import (
     model, knowledge_base, index, rebuild_faiss, extract_text,
     is_duplicate, log_memory, file_hashes, processed_files_path,
@@ -23,13 +21,9 @@ def authenticate_drive():
     try:
         json_data = os.getenv("SERVICE_ACCOUNT_JSON")
         if json_data:
-            creds = service_account.Credentials.from_service_account_info(
-                json.loads(json_data), scopes=SCOPES
-            )
+            creds = service_account.Credentials.from_service_account_info(json.loads(json_data), scopes=SCOPES)
         else:
-            creds = service_account.Credentials.from_service_account_file(
-                "service_account.json", scopes=SCOPES
-            )
+            creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
         return creds
     except Exception as e:
         processing_status["stage"] = f"Auth error: {e}"
@@ -43,8 +37,8 @@ def ensure_folder(service, name):
     folders = results.get("files", [])
     if folders:
         return folders[0]['id']
-    file_metadata = {'name': name, 'mimeType': 'application/vnd.google-apps.folder'}
-    folder = service.files().create(body=file_metadata, fields='id').execute()
+    folder_metadata = {'name': name, 'mimeType': 'application/vnd.google-apps.folder'}
+    folder = service.files().create(body=folder_metadata, fields='id').execute()
     return folder['id']
 
 def move_file(service, file_id, new_folder_id, move_log):
@@ -68,14 +62,18 @@ def move_file(service, file_id, new_folder_id, move_log):
 def get_all_files_iteratively(service):
     stack = ["root"]
     all_files, folders = [], []
+    seen_ids = set()
     while stack:
         current = stack.pop()
         try:
             subs = service.files().list(
-                q=f"'{current}' in parents",
-                fields="files(id, name, mimeType, size)"
+                q=f"'{current}' in parents and trashed = false",
+                fields="files(id, name, mimeType, size, parents)"
             ).execute().get("files", [])
             for item in subs:
+                if item['id'] in seen_ids:
+                    continue
+                seen_ids.add(item['id'])
                 if item['mimeType'] == 'application/vnd.google-apps.folder' and item['name'] not in BASE_FOLDERS:
                     folders.append((item['id'], item['name']))
                     stack.append(item['id'])
@@ -85,10 +83,24 @@ def get_all_files_iteratively(service):
             processing_status['log'].setdefault("folder_scan_errors", []).append(str(e))
     return all_files, folders
 
+def get_unorganized_files(service):
+    try:
+        files = service.files().list(
+            q="not trashed and 'me' in owners",
+            fields="files(id, name, mimeType, size, parents)"
+        ).execute().get("files", [])
+        limbo_files = [f for f in files if not f.get("parents")]
+        processing_status["log"]["limbo_files_detected"] = len(limbo_files)
+        return limbo_files
+    except Exception as e:
+        processing_status['log'].setdefault("limbo_errors", []).append(str(e))
+        return []
+
 def run_drive_processing():
     global index
     processing_status.update({"running": True, "stage": "Starting cleanup", "log": {}})
     move_log, error_log = {}, []
+
     try:
         creds = authenticate_drive()
         if not creds:
@@ -96,8 +108,9 @@ def run_drive_processing():
             return
 
         service = build("drive", "v3", credentials=creds)
-        processing_status["stage"] = "Scanning files"
+        processing_status["stage"] = "Scanning Drive"
         files, folders = get_all_files_iteratively(service)
+        files += get_unorganized_files(service)
 
         ext_counter = {}
         for f in files:
@@ -105,15 +118,17 @@ def run_drive_processing():
             ext_counter[ext] = ext_counter.get(ext, 0) + 1
 
         folder_ids = {name: ensure_folder(service, name) for name in BASE_FOLDERS}
+        quarantine_id = ensure_folder(service, "Quarantine")
 
         new_knowledge = {}
         for file in files:
             try:
                 name, file_id = file['name'], file['id']
-                ext = os.path.splitext(name)[-1].lower()
+                ext = os.path.splitext(name)[-1].lower() or ".unknown"
                 size = int(file.get("size", 0))
 
                 if size > 50 * 1024 * 1024:
+                    move_file(service, file_id, quarantine_id, move_log.setdefault("Quarantine", []))
                     error_log.append({"file": name, "reason": "File too large"})
                     continue
 
@@ -130,30 +145,30 @@ def run_drive_processing():
                 os.remove(path)
 
                 if not text or len(text.strip()) < 10:
+                    move_file(service, file_id, quarantine_id, move_log.setdefault("Quarantine", []))
                     error_log.append({"file": name, "reason": "Empty or unreadable content"})
                     continue
 
                 category = EXTENSION_MAP.get(ext, "Miscellaneous") if ext_counter.get(ext, 0) >= 10 else "Miscellaneous"
 
                 if not is_duplicate(text, name):
-                    if category == "Word_Documents":
+                    if category in ["Word_Documents", "PDFs", "Excel_Files", "Miscellaneous"]:
                         new_knowledge[name] = text
                         file_hashes.add(hashlib.md5(text.encode("utf-8")).hexdigest())
                         processed_files.add(name)
 
                 move_file(service, file_id, folder_ids[category], move_log.setdefault(category, []))
-                processing_status['memory'] = log_memory()
+                log_memory()
 
             except Exception as e:
+                move_file(service, file['id'], quarantine_id, move_log.setdefault("Quarantine", []))
                 error_log.append({"file": file.get('name'), "reason": str(e)})
 
-        processing_status["stage"] = "Cleaning folders"
+        processing_status["stage"] = "Cleaning empty folders"
         for fid, name in folders:
             if name in BASE_FOLDERS:
                 continue
-            contents = service.files().list(
-                q=f"'{fid}' in parents", fields="files(id)"
-            ).execute().get("files", [])
+            contents = service.files().list(q=f"'{fid}' in parents", fields="files(id)").execute().get("files", [])
             if not contents:
                 try:
                     service.files().delete(fileId=fid).execute()
@@ -162,7 +177,6 @@ def run_drive_processing():
 
         knowledge_base.update(new_knowledge)
         np.save("ai_metadata.npy", knowledge_base)
-
         with open(processed_files_path, "w") as f:
             json.dump(list(processed_files), f)
 
@@ -172,6 +186,7 @@ def run_drive_processing():
     except Exception as e:
         error_log.append({"fatal": str(e)})
         processing_status["stage"] = f"Fatal error: {e}"
+
     finally:
         processing_status.update({
             "running": False,
@@ -182,6 +197,6 @@ def run_drive_processing():
                 "errors": error_log,
                 "count": len(files),
                 "processed": sum(len(v) for v in move_log.values()),
-                "duplicates_skipped": len(processed_files),
+                "duplicates_skipped": len(processed_files)
             }
         })
