@@ -54,25 +54,34 @@ def move_file(service, file_id, new_folder_id, move_log):
         return False
 
 def get_all_files_iteratively(service):
-    stack = ["root"]
     all_files, folders, seen_ids = [], [], set()
-    while stack:
-        current = stack.pop()
-        try:
-            subs = service.files().list(
-                q=f"'{current}' in parents and trashed = false",
-                fields="files(id, name, mimeType, size, parents)"
-            ).execute().get("files", [])
-            for item in subs:
-                if item['id'] in seen_ids: continue
-                seen_ids.add(item['id'])
-                if item['mimeType'] == 'application/vnd.google-apps.folder' and item['name'] not in BASE_FOLDERS:
+    page_token = None
+    while True:
+        response = service.files().list(
+            q="not trashed and 'me' in owners",
+            spaces='drive',
+            corpora='user',
+            fields="nextPageToken, files(id, name, mimeType, size, parents)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            pageToken=page_token
+        ).execute()
+
+        for item in response.get("files", []):
+            if item['id'] in seen_ids:
+                continue
+            seen_ids.add(item['id'])
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                if item['name'] not in BASE_FOLDERS:
                     folders.append((item['id'], item['name']))
-                    stack.append(item['id'])
-                elif 'folder' not in item['mimeType']:
-                    all_files.append(item)
-        except Exception as e:
-            processing_status['log'].setdefault("folder_scan_errors", []).append(str(e))
+            else:
+                all_files.append(item)
+
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    print(f"🔍 Found {len(all_files)} total files, {len(folders)} folders.")
     return all_files, folders
 
 def get_unorganized_files(service):
@@ -125,9 +134,13 @@ def run_drive_processing():
 
         for file in files:
             try:
+                print(f"📂 Processing: {file['name']}")
                 name, file_id = file['name'], file['id']
                 ext = os.path.splitext(name)[-1].lower() or ".unknown"
                 size = int(file.get("size", 0))
+
+                if ext not in EXTENSION_MAP:
+                    continue  # Skip unknown formats
 
                 if size > 50 * 1024 * 1024:
                     move_file(service, file_id, quarantine_id, move_log.setdefault("Quarantine", []))
