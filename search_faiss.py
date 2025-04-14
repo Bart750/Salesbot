@@ -23,13 +23,17 @@ def kill_existing_processes():
 
 def launch_drive_sort():
     if not processing_status.get("boot_triggered"):
+        print("🚀 Launching Drive processing thread...")
         processing_status["boot_triggered"] = True
         threading.Thread(target=run_drive_processing, daemon=True).start()
 
 def wait_for_index(timeout=60):
+    print("⏳ Waiting for FAISS index...")
     start = time.time()
     while index is None and time.time() - start < timeout:
         time.sleep(1)
+    if index is None:
+        print("⚠️ Timeout: FAISS index did not initialize.")
 
 @app.route("/", methods=["GET"])
 def home():
@@ -40,6 +44,10 @@ def home():
         "last_run": processing_status.get("last_run"),
         "running": processing_status["running"]
     })
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "ok", "memory_MB": log_memory()})
 
 @app.route("/status", methods=["GET"])
 def status():
@@ -84,7 +92,7 @@ def query():
         }), 503
     try:
         query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
-        D, I = index.search(query_embedding, 3)
+        D, I = index.search(query_embedding, 5)  # You can increase this for more results
         keys = list(knowledge_base.keys())
         results = []
         for idx in I[0]:
@@ -114,7 +122,6 @@ def last_run_log():
 
 @app.route("/recover_limbo", methods=["POST"])
 def recover_limbo():
-    # 🔧 Hook this up to any file recovery tool you build
     return jsonify({"message": "Limbo recovery not implemented yet."}), 501
 
 if __name__ == "__main__":
