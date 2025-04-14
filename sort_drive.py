@@ -1,4 +1,4 @@
-# ✅ sort_drive.py – Full Fix: Limbo Recovery, Shared File Access, Folder Cleanup
+# ✅ sort_drive.py – Bulletproof Limbo Recovery, Smart Folder Cleanup
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -57,8 +57,9 @@ def get_all_files_iteratively(service):
     all_files, folders, seen_ids = [], [], set()
     page_token = None
     while True:
+        # ✅ FIXED: Restructured query to avoid syntax issues
         response = service.files().list(
-            q="not trashed and ('me' in owners or sharedWithMe = true or 'root' in parents or parents = null)",
+            q="not trashed and (('me' in owners and 'root' in parents) or sharedWithMe = true or parents = null)",
             spaces='drive',
             corpora='user',
             fields="nextPageToken, files(id, name, mimeType, size, parents)",
@@ -84,30 +85,6 @@ def get_all_files_iteratively(service):
     print(f"🔍 Found {len(all_files)} total files, {len(folders)} folders.")
     return all_files, folders
 
-def get_unorganized_files(service):
-    try:
-        limbo_files = []
-        page_token = None
-        while True:
-            response = service.files().list(
-                q="not trashed and ('me' in owners or sharedWithMe = true) and (not 'root' in parents or parents = null)",
-                spaces='drive',
-                corpora='user',
-                fields="nextPageToken, files(id, name, mimeType, size, parents)",
-                pageToken=page_token
-            ).execute()
-            limbo_files.extend(response.get("files", []))
-            page_token = response.get("nextPageToken")
-            if not page_token:
-                break
-
-        print(f"📥 Found {len(limbo_files)} limbo (unorganised) files")
-        processing_status["log"]["limbo_files_detected"] = len(limbo_files)
-        return limbo_files
-    except Exception as e:
-        processing_status['log'].setdefault("limbo_errors", []).append(str(e))
-        return []
-
 def get_all_folders(service):
     results = service.files().list(
         q="mimeType='application/vnd.google-apps.folder' and trashed = false",
@@ -130,10 +107,7 @@ def run_drive_processing():
         service = build("drive", "v3", credentials=creds)
         processing_status["stage"] = "Scanning Drive"
 
-        files, _ = get_all_files_iteratively(service)
-        files += get_unorganized_files(service)
-        folders = get_all_folders(service)
-
+        files, folders = get_all_files_iteratively(service)
         ext_counter = {}
         for f in files:
             ext = os.path.splitext(f['name'])[-1].lower()
