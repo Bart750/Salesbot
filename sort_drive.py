@@ -57,9 +57,9 @@ def get_all_files_iteratively(service):
     all_files, folders, seen_ids = [], [], set()
     page_token = None
     while True:
-        # ✅ FIXED: Restructured query to avoid syntax issues
+        # ✅ FINAL FIXED QUERY (Safe for Drive API)
         response = service.files().list(
-            q="not trashed and (('me' in owners and 'root' in parents) or sharedWithMe = true or parents = null)",
+            q="not trashed and (('me' in owners and 'root' in parents) or sharedWithMe = true or ('me' in owners and parents = ''))",
             spaces='drive',
             corpora='user',
             fields="nextPageToken, files(id, name, mimeType, size, parents)",
