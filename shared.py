@@ -1,4 +1,4 @@
-# ✅ shared.py – Stable Runtime State & Safe Indexing (Patched)
+# ✅ shared.py – Runtime State, Safe Indexing, File Deduplication
 import faiss
 import numpy as np
 import hashlib
@@ -26,23 +26,28 @@ index = None
 knowledge_base = {}
 file_hashes = set()
 
-# ✅ Load previous file memory
+# ✅ Load prior processed files
 processed_files_path = "processed_files.json"
 processed_files = set()
 if os.path.exists(processed_files_path):
-    with open(processed_files_path, "r") as f:
-        processed_files = set(json.load(f))
+    try:
+        with open(processed_files_path, "r") as f:
+            processed_files = set(json.load(f))
+    except Exception as e:
+        processing_status["stage"] = f"Failed to load processed_files.json: {e}"
+        processed_files = set()
 
-# ✅ Load prior vector metadata
+# ✅ Load vector knowledge base
 if os.path.exists("ai_metadata.npy"):
     try:
         kb = np.load("ai_metadata.npy", allow_pickle=True).item()
         if isinstance(kb, dict):
             knowledge_base.update(kb)
         else:
-            processing_status["stage"] = "ai_metadata.npy was not a valid dictionary"
+            raise ValueError("ai_metadata.npy did not contain a dictionary")
     except Exception as e:
         processing_status["stage"] = f"Metadata load failed: {e}"
+        knowledge_base = {}
 
 # 📁 Extension routing
 EXTENSION_MAP = {
@@ -70,7 +75,7 @@ BASE_FOLDERS = set([
     "System_Files", "Quarantine"
 ])
 
-# 🔁 Stable FAISS index rebuild
+# 🔁 FAISS index rebuild
 def rebuild_faiss():
     global index
     try:
@@ -100,6 +105,9 @@ def extract_text(path, ext):
         elif ext == ".docx":
             return " ".join([p.text for p in docx.Document(path).paragraphs])
         elif ext in [".txt", ".md", ".html"]:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        elif ext == ".csv":
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read()
     except Exception:
